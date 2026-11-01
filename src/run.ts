@@ -129,7 +129,10 @@ export async function runCommand(input: {
     reachable: reach,
   });
   if (route.status !== 'resolved') throw new RouteError(route);
-  const candidates = reach.filter((item) => route.signetIds.includes(item.signetId));
+  // In the route's (sorted) order, so the pick and the listing never depend on directory order.
+  const candidates = route.signetIds.flatMap((signetId) =>
+    reach.filter((item) => item.signetId === signetId),
+  );
   const resources = [
     ...new Map(
       candidates.flatMap((item) => item.resources).map((resource) => [resource.id, resource]),
