@@ -1,8 +1,7 @@
 import { kingdomUrl, SignetHttpError } from '@inixiative/signet';
-import { ownerRefSchema } from '@inixiative/signet/contracts';
+import { ownerKey, ownerRefSchema } from '@inixiative/signet/contracts';
 import { z } from 'zod';
-import { ownerKey } from './owner';
-import type { Reachable } from './routing';
+import { type ProviderFamily, providerFamilySchema } from './selectors';
 
 const ownerGroupSchema = ownerRefSchema.extend({
   id: z.string(),
@@ -52,6 +51,8 @@ export const overviewSchema = z.object({
       deletedAt: z.coerce.date().nullable(),
     }),
   ),
+  /** Kingdom's provider catalog: a provider kind (`githubOrganization`) names its `family` (`github`). */
+  providers: z.array(z.object({ key: z.string(), family: z.string().optional() })),
 });
 export type Overview = z.infer<typeof overviewSchema>;
 export type OverviewSignet = Overview['signets'][number];
@@ -73,17 +74,35 @@ export async function readOverview(url: string, apiToken: string, transport: typ
   return overviewSchema.parse(z.object({ data: z.unknown() }).parse(await response.json()).data);
 }
 
-/** A Signet issued to the viewer that can still be enrolled. */
+/**
+ * Recipients a person enrolls as: themselves, or one of their memberships. A membership's
+ * recipient carries the person's user id; Kingdom's enrollment checks the rest.
+ */
+const personRecipientModels = new Set(['User', 'OrganizationUser', 'SpaceUser']);
+
+/** A Signet issued to the viewer, or to one of the viewer's memberships, that can still be enrolled. */
 export const enrollableSignets = (overview: Overview, now = new Date()) =>
   overview.signets.filter(
     (signet) =>
-      signet.recipientModel === 'User' &&
+      personRecipientModels.has(signet.recipientModel) &&
       signet.recipientUserId === overview.dashboard.viewerUserId &&
       !signet.revokedAt &&
       !signet.closedAt &&
       !signet.deletedAt &&
       (!signet.expiresAt || signet.expiresAt > now),
   );
+
+/** The provider family KCP serves that an integration belongs to, by Kingdom's catalog; null for any other. */
+export function integrationFamily(
+  overview: Overview,
+  integrationId: string,
+): ProviderFamily | null {
+  const provider = overview.integrations.find((item) => item.id === integrationId)?.provider;
+  if (!provider) return null;
+  const family = overview.providers.find((item) => item.key === provider)?.family ?? provider;
+  const parsed = providerFamilySchema.safeParse(family);
+  return parsed.success ? parsed.data : null;
+}
 
 export type MapIntegration = {
   id: string;
@@ -132,20 +151,6 @@ export function kingdomMap(overview: Overview, heldSignetIds: ReadonlySet<string
   }
   return [...groups.values()];
 }
-
-/** The map as routing reads it: one entry per integration, with a held Signet when there is one. */
-export const reachableFromMap = (owners: readonly MapOwner[]): Reachable[] =>
-  owners.flatMap((group) =>
-    group.integrations
-      .filter((integration) => integration.enabled)
-      .map((integration) => ({
-        integrationId: integration.id,
-        provider: integration.provider,
-        owner: group.owner,
-        name: integration.name,
-        ...(integration.held[0] ? { signetId: integration.held[0] } : {}),
-      })),
-  );
 
 /** Compact text: one line per owner, then one indented line per integration. */
 export function formatMap(owners: readonly MapOwner[]) {

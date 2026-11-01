@@ -3,11 +3,16 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generateSignetKey, readPrivateJson, writePrivateJson } from '@inixiative/signet';
-import { SignetHolders } from '../src/holders';
-import { installationPaths } from '../src/installation';
+import {
+  generateSignetKey,
+  installationPaths,
+  readPrivateJson,
+  SignetHolders,
+  writePrivateJson,
+} from '@inixiative/signet';
 import { savedKingdomUrl } from '../src/kingdom';
 import {
+  type EnrollCandidate,
   loginWithSignet,
   loginWithToken,
   logout,
@@ -24,6 +29,7 @@ import {
   overview,
   token43,
   tribe,
+  viewer,
 } from './fixtures';
 
 const apiToken = `test_user_${'c'.repeat(48)}`;
@@ -36,6 +42,15 @@ const home = async () => {
   homes.push(directory);
   return directory;
 };
+
+/** What the loopback Kingdom answers for `/me/overview` and `installationInquiries`. */
+let currentOverview: ReturnType<typeof overview> = overview();
+let inquiriesStatus = 200;
+afterEach(() => {
+  currentOverview = overview();
+  inquiriesStatus = 200;
+});
+const enrolls = () => calls.filter((call) => call.path === '/api/v1/access/enrollSignet');
 
 /** A loopback Kingdom answering the calls a token login makes. */
 const calls: { path: string; authorization: string | null; dpop: boolean; body: unknown }[] = [];
@@ -54,9 +69,19 @@ beforeAll(() => {
         dpop: request.headers.has('dpop'),
         body,
       });
-      if (path === '/api/v1/me/overview') return Response.json({ data: overview() });
+      if (path === '/api/v1/me/overview') return Response.json({ data: currentOverview });
       if (path === '/api/v1/access/nonce') return Response.json({ data: { nonce: token43('n') } });
-      if (path === '/api/v1/access/enrollSignet') return Response.json({ data: credentials() });
+      if (path === '/api/v1/access/enrollSignet') {
+        // Slow enough that two unlocked logins would both enroll.
+        await Bun.sleep(30);
+        return Response.json({ data: credentials() });
+      }
+      if (path === '/api/v1/access/installationInquiries')
+        return inquiriesStatus === 200
+          ? Response.json({
+              data: { pending: null, declinedAt: null, inquiries: [], hostedSignetRequests: [] },
+            })
+          : Response.json({ message: 'Kingdom is down' }, { status: inquiriesStatus });
       return new Response('not found', { status: 404 });
     },
   });
@@ -72,32 +97,114 @@ describe('login', () => {
     ).rejects.toThrow(/'kcp' installation kind/);
   });
 
-  test('--token enrolls each Signet issued to the person, records its integration, and never stores the token', async () => {
+  test('--token lists the Signets on families KCP serves, enrolls them once confirmed, and never stores the token', async () => {
     calls.length = 0;
     const kcpHome = await home();
-    const result = await loginWithToken({ home: kcpHome, url, apiToken, name: 'KCP test' });
-    expect(result).toEqual({ url, signetIds: [id(11)] });
-    const enroll = calls.find((call) => call.path === '/api/v1/access/enrollSignet');
-    expect(enroll).toMatchObject({
+    const offered: EnrollCandidate[][] = [];
+    const confirm = async (candidates: readonly EnrollCandidate[]) => {
+      offered.push([...candidates]);
+      return true;
+    };
+    const result = await loginWithToken({
+      home: kcpHome,
+      url,
+      apiToken,
+      name: 'KCP test',
+      confirm,
+    });
+    expect(offered).toEqual([
+      [
+        { signetId: id(11), name: 'Railway for Aron', integrationId: id(1), family: 'railway' },
+        { signetId: id(14), name: 'GitHub for Aron', integrationId: id(3), family: 'github' },
+      ],
+    ]);
+    expect(result).toEqual({ url, signetIds: [id(11), id(14)] });
+    expect(enrolls()[0]).toMatchObject({
       authorization: `Bearer ${apiToken}`,
       dpop: true,
       body: { signetId: id(11), expectedRevision: 3, name: 'KCP test' },
     });
     const { directory } = installationPaths(kcpHome, url);
-    const saved = await readPrivateJson(join(directory, `signet-${id(11)}.json`));
-    expect(saved).toMatchObject({
+    expect(await readPrivateJson(join(directory, `signet-${id(11)}.json`))).toMatchObject({
       signetId: id(11),
       integrationId: id(1),
       owner: orgOwner(tribe),
       url,
     });
+    expect(existsSync(join(directory, `signet-${id(15)}.json`))).toBe(false);
     expect(await savedKingdomUrl(kcpHome)).toBe(url);
     for (const name of await readdir(directory))
       expect(await readFile(join(directory, name), 'utf8')).not.toContain(apiToken);
 
     calls.length = 0;
-    expect(await loginWithToken({ home: kcpHome, url, apiToken })).toEqual({ url, signetIds: [] });
-    expect(calls.some((call) => call.path === '/api/v1/access/enrollSignet')).toBe(false);
+    expect(await loginWithToken({ home: kcpHome, url, apiToken, confirm })).toEqual({
+      url,
+      signetIds: [],
+    });
+    expect(offered).toHaveLength(1);
+    expect(enrolls()).toEqual([]);
+  });
+
+  test('--token without --signet enrolls nothing unless confirmed', async () => {
+    calls.length = 0;
+    const kcpHome = await home();
+    await expect(loginWithToken({ home: kcpHome, url, apiToken })).rejects.toThrow(
+      /Nothing enrolled.*--yes.*--signet/,
+    );
+    await expect(
+      loginWithToken({ home: kcpHome, url, apiToken, confirm: async () => false }),
+    ).rejects.toThrow(/Nothing enrolled/);
+    expect(enrolls()).toEqual([]);
+  });
+
+  test('--token --signet enrolls just that one, with no confirmation, again if asked again', async () => {
+    calls.length = 0;
+    const kcpHome = await home();
+    const confirm = async () => {
+      throw Error('not asked');
+    };
+    const once = { home: kcpHome, url, apiToken, signetId: id(15), confirm };
+    expect(await loginWithToken(once)).toEqual({ url, signetIds: [id(15)] });
+    expect(await loginWithToken(once)).toEqual({ url, signetIds: [id(15)] });
+    expect(enrolls().map((call) => (call.body as { signetId: string }).signetId)).toEqual([
+      id(15),
+      id(15),
+    ]);
+  });
+
+  test("--token offers Signets issued to the person's memberships", async () => {
+    const base = overview();
+    const template = base.signets[0];
+    if (!template) throw Error('fixture');
+    currentOverview = {
+      ...base,
+      signets: [
+        { ...template, id: id(41), recipientModel: 'OrganizationUser', recipientUserId: viewer },
+        { ...template, id: id(42), recipientModel: 'SpaceUser', recipientUserId: viewer },
+        { ...template, id: id(43), recipientModel: 'OrganizationUser', recipientUserId: id(600) },
+      ],
+    };
+    const offered: string[] = [];
+    await loginWithToken({
+      home: await home(),
+      url,
+      apiToken,
+      confirm: async (candidates) => {
+        offered.push(...candidates.map((candidate) => candidate.signetId));
+        return true;
+      },
+    });
+    expect(offered).toEqual([id(41), id(42)]);
+  });
+
+  test('two logins racing on one home enroll each Signet once: the hold lock serializes them', async () => {
+    calls.length = 0;
+    const kcpHome = await home();
+    const login = () => loginWithToken({ home: kcpHome, url, apiToken, confirm: async () => true });
+    const [first, second] = await Promise.all([login(), login()]);
+    expect([...first.signetIds, ...second.signetIds].sort()).toEqual([id(11), id(14)]);
+    expect(enrolls()).toHaveLength(2);
+    expect(existsSync(join(installationPaths(kcpHome, url).directory, '.hold-lock'))).toBe(false);
   });
 
   test('--token --signet refuses a Signet not issued to the person', async () => {
@@ -140,10 +247,9 @@ describe('login', () => {
 });
 
 describe('status and logout', () => {
-  test('status describes each held Signet; logout deletes the key and Signets', async () => {
+  test('status describes each held Signet; logout deletes the key and Signets and names what to revoke', async () => {
     const kcpHome = await home();
-    const local = 'http://localhost:4100';
-    await holdSignet(kcpHome, local, {
+    await holdSignet(kcpHome, url, {
       signetId: id(11),
       integrationId: id(1),
       owner: orgOwner(tribe),
@@ -152,9 +258,9 @@ describe('status and logout', () => {
       describe: async ({ signetId }) =>
         description({ signetId, integrationId: id(1), provider: 'railway', resourceId: id(21) }),
     });
-    const current = await status(kcpHome, local, holders);
+    const current = await status(kcpHome, url, holders);
     expect(current).toMatchObject({
-      url: local,
+      url,
       loggedIn: true,
       installation: null,
       pairingSupported: false,
@@ -168,12 +274,35 @@ describe('status and logout', () => {
         },
       ],
     });
-    expect(await logout(kcpHome, local)).toEqual({
-      url: local,
+    expect(await logout(kcpHome, url)).toEqual({
+      url,
       removedSignetIds: [id(11)],
       withdrawnRegistrations: [],
+      revokeInKingdom: { signetIds: [id(11)] },
     });
-    expect(existsSync(installationPaths(kcpHome, local).directory)).toBe(false);
-    expect((await status(kcpHome, local, holders)).loggedIn).toBe(false);
+    expect(existsSync(installationPaths(kcpHome, url).directory)).toBe(false);
+    expect((await status(kcpHome, url, holders)).loggedIn).toBe(false);
+  });
+
+  test("logout reports a withdrawal Kingdom refused, and names the pairing's Signet and integration", async () => {
+    const kcpHome = await home();
+    const { directory } = await holdSignet(kcpHome, url, {
+      signetId: id(11),
+      integrationId: id(1),
+      owner: orgOwner(tribe),
+    });
+    await writePrivateJson(join(directory, 'installation.json'), {
+      integrationId: id(80),
+      signetId: id(81),
+      owner: orgOwner(tribe),
+    });
+    inquiriesStatus = 503;
+    const removed = await logout(kcpHome, url);
+    expect(removed).toMatchObject({
+      withdrawnRegistrations: [],
+      withdrawError: expect.stringContaining('503'),
+      revokeInKingdom: { signetIds: [id(11), id(81)], integrationId: id(80) },
+    });
+    expect(existsSync(directory)).toBe(false);
   });
 });

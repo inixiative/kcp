@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { OwnerRef } from '@inixiative/signet/contracts';
-import { type Reachable, resolveRoute } from '../src/routing';
+import { chooseSignet, type Reachable, resolveRoute } from '../src/routing';
 import type { Selection } from '../src/selectors';
 
 const id = (n: number) => `01a196f0-a68e-7d81-a8cd-${String(n).padStart(12, '0')}`;
@@ -53,13 +53,24 @@ const route = (
   });
 
 describe('resolveRoute (§5 order)', () => {
-  test('--signet wins over everything else', () => {
+  test('--signet wins over the project mapping', () => {
+    expect(route({ signetId: id(12) }, { project: { integrationId: id(1) } })).toEqual({
+      status: 'resolved',
+      via: 'signet',
+      integrationId: id(2),
+      signetIds: [id(12)],
+    });
+  });
+  test('--signet beside owner flags: agreeing is fine, contradicting is refused, not overridden', () => {
     expect(
-      route(
-        { signetId: id(12), owner: { ownerModel: 'Organization', organizationId: tribe } },
-        { project: { integrationId: id(1) } },
-      ),
-    ).toEqual({ status: 'resolved', via: 'signet', integrationId: id(2), signetId: id(12) });
+      route({
+        signetId: id(12),
+        owner: { ownerModel: 'Organization', organizationId: inixiative },
+      }),
+    ).toMatchObject({ status: 'resolved', signetIds: [id(12)] });
+    expect(
+      route({ signetId: id(12), owner: { ownerModel: 'Organization', organizationId: tribe } }),
+    ).toMatchObject({ status: 'error', reason: expect.stringContaining('pass one or the other') });
   });
   test('--signet that this machine does not hold, or that contradicts -i or the CLI, is an error', () => {
     expect(route({ signetId: id(99) }).status).toBe('error');
@@ -72,21 +83,33 @@ describe('resolveRoute (§5 order)', () => {
       reason: expect.stringContaining('github'),
     });
   });
-  test('--token names no integration grant', () => {
-    expect(route({ tokenId: id(50) })).toMatchObject({ status: 'error' });
-  });
-  test('-i comes next, and overrides the owner flags', () => {
+  test('-i comes next; owner flags beside it must agree with its owner', () => {
+    expect(
+      route({ integrationId: id(1), owner: { ownerModel: 'Organization', organizationId: tribe } }),
+    ).toEqual({
+      status: 'resolved',
+      via: 'integration',
+      integrationId: id(1),
+      signetIds: [id(11)],
+    });
     expect(
       route({
         integrationId: id(1),
         owner: { ownerModel: 'Organization', organizationId: inixiative },
       }),
-    ).toEqual({
-      status: 'resolved',
-      via: 'integration',
-      integrationId: id(1),
-      signetId: id(11),
-    });
+    ).toMatchObject({ status: 'error', reason: expect.stringContaining('-i belongs to') });
+  });
+  test('-i with owner flags this machine cannot check is refused', () => {
+    expect(
+      resolveRoute({
+        family: 'railway',
+        selection: {
+          integrationId: id(1),
+          owner: { ownerModel: 'Organization', organizationId: tribe },
+        },
+        reachable: [{ ...tribeRailway, owner: null }],
+      }),
+    ).toMatchObject({ status: 'error', reason: expect.stringContaining("Can't check -i") });
   });
   test('-i of another provider is an error; -i without a held Signet asks the owner', () => {
     expect(route({ integrationId: id(3) }).status).toBe('error');
@@ -104,7 +127,7 @@ describe('resolveRoute (§5 order)', () => {
       status: 'resolved',
       via: 'owner',
       integrationId: id(1),
-      signetId: id(11),
+      signetIds: [id(11)],
     });
     expect(
       route(
@@ -126,7 +149,7 @@ describe('resolveRoute (§5 order)', () => {
       status: 'resolved',
       via: 'project',
       integrationId: id(1),
-      signetId: id(11),
+      signetIds: [id(11)],
     });
     expect(route({}, { project: { integrationId: id(2) } })).toMatchObject({
       via: 'project',
@@ -144,7 +167,7 @@ describe('resolveRoute (§5 order)', () => {
       status: 'resolved',
       via: 'single',
       integrationId: id(3),
-      signetId: id(13),
+      signetIds: [id(13)],
     });
   });
   test('several matches are ambiguous; none asks the owner', () => {
@@ -166,5 +189,62 @@ describe('resolveRoute (§5 order)', () => {
         reachable: [{ ...tribeRailway, owner: null }],
       }).status,
     ).toBe('ask');
+  });
+  test('two Signets on one integration are one match, not ambiguous', () => {
+    const second: Reachable = { ...tribeRailway, signetId: id(21) };
+    expect(
+      resolveRoute({ family: 'railway', selection: {}, reachable: [tribeRailway, second] }),
+    ).toEqual({
+      status: 'resolved',
+      via: 'single',
+      integrationId: id(1),
+      signetIds: [id(11), id(21)],
+    });
+    expect(
+      resolveRoute({
+        family: 'railway',
+        selection: { owner: { ownerModel: 'Organization', organizationId: tribe } },
+        reachable: [tribeRailway, second, inixiativeRailway],
+      }),
+    ).toMatchObject({ status: 'resolved', integrationId: id(1), signetIds: [id(11), id(21)] });
+  });
+});
+
+describe('chooseSignet', () => {
+  const grants = (signetId: string, operation: string, resourceId: string) => ({
+    ...tribeRailway,
+    signetId,
+    grants: [{ operation, resourceIds: [resourceId] }],
+  });
+  const parsed = { operation: 'railway.logs.read', resourceId: id(40) };
+  test('the only held Signet is used, whatever it grants: Kingdom judges', () => {
+    const only = grants(id(11), 'railway.status.read', id(41));
+    expect(chooseSignet([only], parsed, 'railway')).toEqual({ status: 'chosen', signet: only });
+  });
+  test('among several, the one that grants the operation on the resource', () => {
+    const logs = grants(id(21), 'railway.logs.read', id(40));
+    expect(
+      chooseSignet(
+        [grants(id(11), 'railway.logs.read', id(41)), logs, grants(id(22), 'other', id(40))],
+        parsed,
+        'railway',
+      ),
+    ).toEqual({ status: 'chosen', signet: logs });
+  });
+  test('several, none granting it: ambiguous, naming each --signet', () => {
+    expect(
+      chooseSignet(
+        [
+          grants(id(11), 'railway.status.read', id(40)),
+          grants(id(21), 'railway.logs.read', id(41)),
+        ],
+        parsed,
+        'railway',
+      ),
+    ).toMatchObject({
+      status: 'ambiguous',
+      choose: 'signet',
+      reason: expect.stringContaining('--signet'),
+    });
   });
 });

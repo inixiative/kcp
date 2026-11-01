@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import {
   type ProviderFamily,
@@ -31,12 +32,19 @@ export type KcpProject = z.infer<typeof kcpProjectSchema>;
 
 export const projectFileName = join('.foundry', 'kcp.json');
 
-/** The nearest `.foundry/kcp.json` from `cwd` up to the repo root (the first directory with `.git`). */
-export function findProjectFile(cwd: string): string | null {
-  for (let directory = cwd; ; directory = dirname(directory)) {
+/**
+ * The nearest `.foundry/kcp.json` from `cwd` up to its repo root (the first directory with `.git`).
+ * Outside a repo there is none: a walk that reaches `home` or the filesystem root without finding
+ * `.git` returns null, so a stray mapping above the repo, or anywhere above `home`, is never read.
+ */
+export function findProjectFile(cwd: string, home: string = homedir()): string | null {
+  const stop = resolve(home);
+  let found: string | null = null;
+  for (let directory = resolve(cwd); ; directory = dirname(directory)) {
     const file = join(directory, projectFileName);
-    if (existsSync(file)) return file;
-    if (existsSync(join(directory, '.git')) || dirname(directory) === directory) return null;
+    if (!found && existsSync(file)) found = file;
+    if (existsSync(join(directory, '.git'))) return found;
+    if (directory === stop || dirname(directory) === directory) return null;
   }
 }
 

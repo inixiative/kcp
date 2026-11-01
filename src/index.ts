@@ -1,5 +1,3 @@
-export * from './holders';
-export * from './installation';
 export * from './kingdom';
 export * from './operations';
 export * from './overview';

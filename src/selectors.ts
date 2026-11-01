@@ -8,10 +8,17 @@ export type ProviderFamily = z.infer<typeof providerFamilySchema>;
 const binaryFamilies: Record<string, ProviderFamily> = {
   railway: 'railway',
   gh: 'github',
-  git: 'github',
   vercel: 'vercel',
   infisical: 'infisical',
 };
+
+/**
+ * `git push` and `git fetch` read the local working tree, so they run on this machine with a
+ * short-lived credential from KCP's git credential helper (OPERATOR-ACCESS §4), never as a Kingdom
+ * `execute`.
+ */
+export const gitRefusal =
+  "KCP doesn't run git through Kingdom: git reads your working tree, so it runs locally with a short-lived credential from KCP's git credential helper (OPERATOR-ACCESS §4), which isn't built yet";
 
 export const providerFamilyOf = (binary: string): ProviderFamily | null =>
   Object.hasOwn(binaryFamilies, binary) ? (binaryFamilies[binary] ?? null) : null;
@@ -26,7 +33,6 @@ export type OwnerSelector = Pick<OwnerRef, 'ownerModel'> &
 /** Where a command should run, as the flags name it, before routing looks at what exists. */
 export type Selection = {
   signetId?: string;
-  tokenId?: string;
   integrationId?: string;
   owner?: OwnerSelector;
 };
@@ -47,7 +53,6 @@ const flagKeys = {
   '-s': 'spaceId',
   '-u': 'userId',
   '--signet': 'signetId',
-  '--token': 'tokenId',
 } as const;
 type SelectorFlag = keyof typeof flagKeys;
 type FlagKey = (typeof flagKeys)[SelectorFlag];
@@ -81,17 +86,14 @@ export function ownerFromIds(
   };
 }
 
-/** A Selection from validated ids; `--signet` and `--token` each name one exact grant, so not both. */
+/** A Selection from validated ids. */
 export function selectionFromIds(ids: SelectorIds): Selection {
   for (const [key, value] of Object.entries(ids))
     if (value !== undefined && !uuid.safeParse(value).success)
       throw new SelectorError(`${flagFor(key)} takes a UUID, not ${JSON.stringify(value)}`);
-  if (ids.signetId && ids.tokenId)
-    throw new SelectorError('--signet and --token each choose one exact grant; pass one');
   const owner = ownerFromIds(ids);
   return {
     ...(ids.signetId ? { signetId: ids.signetId } : {}),
-    ...(ids.tokenId ? { tokenId: ids.tokenId } : {}),
     ...(ids.integrationId ? { integrationId: ids.integrationId } : {}),
     ...(owner ? { owner } : {}),
   };
@@ -110,6 +112,10 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   for (let word = argv[0]; word !== undefined; word = argv[++index]) {
     const [flag, inline] = word.startsWith('--') ? word.split(/=(.*)/s) : [word];
     const key = flag && Object.hasOwn(flagKeys, flag) ? flagKeys[flag as SelectorFlag] : null;
+    if (flag === '--token')
+      throw new SelectorError(
+        "--token is not an integration selector: a Kingdom API token never reaches an integration, only Kingdom's own API (kcp map --token). Choose a grant with --signet",
+      );
     if (!flag || !key) {
       if (word.startsWith('-')) throw new SelectorError(`Unknown selector ${word}`);
       break;
@@ -123,6 +129,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   }
   const binary = argv[index];
   if (!binary) throw new SelectorError('Name the CLI to run, for example: kcp railway logs');
+  if (binary === 'git') throw new SelectorError(gitRefusal);
   const family = providerFamilyOf(binary);
   if (!family)
     throw new SelectorError(

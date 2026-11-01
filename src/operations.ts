@@ -34,15 +34,3 @@ export class NoOperationsError extends Error {
 
 export const isRefused = (parsed: ParsedOperation | RefusedOperation): parsed is RefusedOperation =>
   'refused' in parsed;
-
-/** The operation a command is, or why it can't be one. */
-export function parseOperation(
-  family: ProviderFamily,
-  args: readonly string[],
-  context: Parameters<OperationParser>[1],
-  parsers: Partial<Record<ProviderFamily, OperationParser>> = operationParsers,
-) {
-  const parser = parsers[family];
-  if (!parser) throw new NoOperationsError(family);
-  return parser(args, context);
-}

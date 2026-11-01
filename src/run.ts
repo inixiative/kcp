@@ -1,16 +1,26 @@
-import { SignetClient } from '@inixiative/signet';
+import {
+  type HolderView,
+  heldCredentials,
+  installationPaths,
+  SignetClient,
+  SignetHolders,
+} from '@inixiative/signet';
 import { accessInputSchema } from '@inixiative/signet/contracts';
-import { type HolderView, SignetHolders } from './holders';
-import { heldCredentials, installationPaths } from './installation';
 import {
   isRefused,
+  NoOperationsError,
   type OperationParser,
   type OperationResource,
   operationParsers,
-  parseOperation,
 } from './operations';
 import { findProjectFile, projectSelections, readProject } from './project';
-import { type Reachable, type Route, resolveRoute } from './routing';
+import {
+  chooseSignet,
+  type Reachable,
+  type Route,
+  resolveRoute,
+  type SignetGrants,
+} from './routing';
 import { type ParsedCommand, type ProviderFamily, parseCommand } from './selectors';
 import { holdGrantedSignets } from './session';
 
@@ -26,20 +36,22 @@ export function routeMessage(route: Exclude<Route, { status: 'resolved' }>) {
   if (route.status === 'ambiguous')
     return [
       `${route.reason}:`,
-      ...route.candidates.map(
-        (candidate) =>
-          `  -i ${candidate.integrationId}  ${candidate.name ?? ''}${candidate.signetId ? '' : '  (no Signet held)'}`,
+      ...route.candidates.map((candidate) =>
+        route.choose === 'signet'
+          ? `  --signet ${candidate.signetId}`
+          : `  -i ${candidate.integrationId}  ${candidate.name ?? ''}${candidate.signetId ? '' : '  (no Signet held)'}`,
       ),
     ].join('\n');
   const target = route.integrationId ? ` on integration ${route.integrationId}` : '';
   return `${route.reason}. Ask the integration's owner to grant this machine a Signet${target} for ${route.family}, then run kcp status.`;
 }
 
-export type HeldReach = Reachable & {
-  signetId: string;
-  credentialFile: string;
-  resources: OperationResource[];
-};
+export type HeldReach = Reachable &
+  SignetGrants & {
+    signetId: string;
+    credentialFile: string;
+    resources: OperationResource[];
+  };
 
 /** What this machine's held Signets reach, as Kingdom describes them; revoked or unread ones are left out. */
 export async function heldReach(home: string, url: string, holders = new SignetHolders()) {
@@ -68,6 +80,10 @@ export async function heldReach(home: string, url: string, holders = new SignetH
         signetId: credential.signetId,
         credentialFile: credential.credentialFile,
         resources: [...resources.values()],
+        grants: description.operations.map((operation) => ({
+          operation: operation.key,
+          resourceIds: operation.resources.map((resource) => resource.id),
+        })),
       },
     ];
   });
@@ -87,9 +103,9 @@ const executeWithSignet: Execute = async (credentialFile, request) =>
   (await SignetClient.fromFile(credentialFile)).execute(request);
 
 /**
- * `kcp <selectors> <cli> <args…>`: route to an integration and a held Signet, parse the command
- * into a declared operation's typed input, and execute it through the Signet. The argv itself is
- * never sent.
+ * `kcp <selectors> <cli> <args…>`: route to an integration, parse the command into a declared
+ * operation's typed input, pick the held Signet that grants it, and execute it through that
+ * Signet. The argv itself is never sent, and a provider with no parser makes no network call.
  */
 export async function runCommand(input: {
   argv: readonly string[];
@@ -101,6 +117,8 @@ export async function runCommand(input: {
   execute?: Execute;
 }) {
   const command: ParsedCommand = parseCommand(input.argv);
+  const parser = (input.parsers ?? operationParsers)[command.family];
+  if (!parser) throw new NoOperationsError(command.family);
   await holdGrantedSignets(input.home, input.url).catch(() => []);
   const reach = await heldReach(input.home, input.url, input.holders);
   const project = await projectSelection(input.cwd, command.family);
@@ -111,16 +129,17 @@ export async function runCommand(input: {
     reachable: reach,
   });
   if (route.status !== 'resolved') throw new RouteError(route);
-  const held = reach.find((item) => item.signetId === route.signetId);
-  if (!held) throw Error(`Signet ${route.signetId} is not held here`);
-  const parsed = parseOperation(
-    command.family,
-    command.args,
-    { binary: command.binary, resources: held.resources },
-    input.parsers ?? operationParsers,
-  );
+  const candidates = reach.filter((item) => route.signetIds.includes(item.signetId));
+  const resources = [
+    ...new Map(
+      candidates.flatMap((item) => item.resources).map((resource) => [resource.id, resource]),
+    ).values(),
+  ];
+  const parsed = parser(command.args, { binary: command.binary, resources });
   if (isRefused(parsed)) throw Error(`${command.binary}: ${parsed.refused}`);
-  return (input.execute ?? executeWithSignet)(held.credentialFile, {
+  const chosen = chooseSignet(candidates, parsed, command.family);
+  if (chosen.status !== 'chosen') throw new RouteError(chosen);
+  return (input.execute ?? executeWithSignet)(chosen.signet.credentialFile, {
     integrationId: route.integrationId,
     operation: parsed.operation,
     input: accessInputSchema.parse({ ...parsed.input, resourceId: parsed.resourceId }),

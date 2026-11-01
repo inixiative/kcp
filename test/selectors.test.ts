@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { ownerFromIds, parseCommand, providerFamilyOf, SelectorError } from '../src/selectors';
+import {
+  gitRefusal,
+  ownerFromIds,
+  parseCommand,
+  providerFamilyOf,
+  SelectorError,
+} from '../src/selectors';
 
 const org = '01a196f0-a68e-7d81-a8cd-fc92e07fb9bf';
 const user = '01a196f0-a68e-7d81-a8cd-000000000001';
@@ -11,7 +17,7 @@ describe('providerFamilyOf', () => {
   test('maps each proxied binary to its provider family', () => {
     expect(providerFamilyOf('railway')).toBe('railway');
     expect(providerFamilyOf('gh')).toBe('github');
-    expect(providerFamilyOf('git')).toBe('github');
+    expect(providerFamilyOf('git')).toBeNull();
     expect(providerFamilyOf('vercel')).toBe('vercel');
     expect(providerFamilyOf('infisical')).toBe('infisical');
     expect(providerFamilyOf('ssh')).toBeNull();
@@ -61,16 +67,15 @@ describe('parseCommand', () => {
       args: ['logs', '-s', 'api'],
     });
   });
-  test('-i, --signet and --token, inline or spaced', () => {
+  test('-i and --signet, inline or spaced', () => {
     expect(parseCommand(['-i', integration, 'gh', 'pr', 'list']).selection).toEqual({
       integrationId: integration,
     });
     expect(parseCommand([`--signet=${signet}`, 'vercel', 'ls']).selection).toEqual({
       signetId: signet,
     });
-    expect(parseCommand(['--token', signet, 'infisical']).selection).toEqual({ tokenId: signet });
   });
-  test('-i alongside owner flags keeps both; routing lets -i win', () => {
+  test('-i alongside owner flags keeps both; routing checks they agree', () => {
     expect(parseCommand(['-i', integration, '-o', org, 'railway']).selection).toEqual({
       integrationId: integration,
       owner: { ownerModel: 'Organization', organizationId: org },
@@ -80,7 +85,8 @@ describe('parseCommand', () => {
     const refuses = (argv: string[], message: RegExp) =>
       expect(() => parseCommand(argv)).toThrow(message);
     refuses(['-o', 'tribe', 'railway'], /-o takes a UUID/);
-    refuses(['--signet', signet, '--token', signet, 'railway'], /pass one/);
+    refuses(['--token', signet, 'infisical'], /--token is not an integration selector/);
+    refuses([`--token=${signet}`, 'railway'], /only Kingdom's own API/);
     refuses(['-i', integration, '-i', signet, 'railway'], /twice/);
     refuses(['-i'], /needs an id/);
     refuses(['-i', '-o', org, 'railway'], /needs an id/);
@@ -93,5 +99,9 @@ describe('parseCommand', () => {
     expect(parseCommand(['-i', integration, '-i', integration, 'gh']).selection).toEqual({
       integrationId: integration,
     });
+  });
+  test('git is the local credential-helper path, never a Kingdom execute', () => {
+    expect(() => parseCommand(['git', 'push'])).toThrow(gitRefusal);
+    expect(() => parseCommand(['-i', integration, 'git', 'fetch'])).toThrow(/credential helper/);
   });
 });

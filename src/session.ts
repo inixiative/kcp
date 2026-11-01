@@ -1,20 +1,28 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { hostname } from 'node:os';
 import { join } from 'node:path';
 import {
   awaitSignet,
-  enrollSignet,
+  defaultInstallationName,
+  type HolderView,
+  heldCredentials,
+  heldSignetFile,
   holdInstallationSignets,
+  holdPersonSignets,
   installationDirectory,
+  installationPaths,
   installationSignets,
   kingdomUrl,
   pairInstallation,
+  privateDirectory,
   readPrivateJson,
   requestSignet,
+  SignetHolders,
   saveCollectedSignet,
   signetCredentialFile,
   signetCredentialSchema,
+  withdrawRegistration,
+  withHoldLock,
   writePrivateJson,
 } from '@inixiative/signet';
 import {
@@ -24,16 +32,9 @@ import {
   ownerRefSchema,
 } from '@inixiative/signet/contracts';
 import { z } from 'zod';
-import { type HolderView, SignetHolders } from './holders';
-import {
-  heldCredentials,
-  heldSignetFile,
-  installationPaths,
-  privateDirectory,
-  withdrawRegistration,
-} from './installation';
 import { saveKingdomUrl } from './kingdom';
-import { enrollableSignets, readOverview } from './overview';
+import { enrollableSignets, integrationFamily, readOverview } from './overview';
+import type { ProviderFamily } from './selectors';
 
 /** The installation kind a KCP pairs as. Kingdom and `@inixiative/signet` don't declare it yet. */
 export const kcpInstallationKind = 'kcp';
@@ -44,7 +45,7 @@ export const supportedInstallationKind = (): InstallationKind | null => {
   return parsed.success ? parsed.data : null;
 };
 
-export const defaultInstallationName = () => `KCP on ${hostname()}`.slice(0, 120);
+const installationName = (name: string | undefined) => name ?? defaultInstallationName('KCP');
 
 /** What a paired KCP keeps beside its key: the integration Kingdom made for it. */
 export const pairedInstallationSchema = z
@@ -92,7 +93,7 @@ export async function pairKcp(input: {
     );
   const url = kingdomUrl(input.url);
   await privateDirectory(input.home);
-  const name = input.name ?? defaultInstallationName();
+  const name = installationName(input.name);
   const paired = await pairInstallation({
     url,
     root: input.home,
@@ -131,10 +132,21 @@ export async function pairKcp(input: {
   };
 }
 
+/** A Signet `kcp login --token` would enroll, as the person is asked to confirm it. */
+export type EnrollCandidate = {
+  signetId: string;
+  name: string;
+  integrationId: string;
+  family: ProviderFamily;
+};
+
 /**
- * `kcp login --token`: acts as the person a Kingdom API token belongs to. Without a request it
- * enrolls this key on every Signet issued to that person (or the one `signetId` names); with one it
- * asks for a Signet on an integration and waits for the owner. The token is used, never stored.
+ * `kcp login --token`: acts as the person a Kingdom API token belongs to. With `signetId` it
+ * enrolls this key on that one Signet. Without, it offers the Signets issued to the person (or
+ * their memberships) on integrations whose provider family KCP serves and not held here yet, and
+ * enrolls them only once `confirm` agrees. With `request` it asks for a Signet on an integration
+ * and waits for the owner. Every write goes through signet's hold lock; the token is used, never
+ * stored.
  */
 export async function loginWithToken(input: {
   home: string;
@@ -142,6 +154,7 @@ export async function loginWithToken(input: {
   apiToken: string;
   signetId?: string;
   request?: { integrationId: string; operations: string[] };
+  confirm?: (candidates: readonly EnrollCandidate[]) => Promise<boolean>;
   name?: string;
   onReview?: (review: { reviewCode: string; expiresAt: string }) => void;
   signal?: AbortSignal;
@@ -150,12 +163,11 @@ export async function loginWithToken(input: {
   await privateDirectory(input.home);
   const { keyFile, directory } = await installationDirectory(input.home, url);
   const overview = await readOverview(url, input.apiToken);
-  const name = input.name ?? defaultInstallationName();
+  const name = installationName(input.name);
   const ownerOf = (integrationId: string): OwnerRef | undefined => {
     const integration = overview.integrations.find((item) => item.id === integrationId);
     return integration ? ownerRefSchema.parse(integration) : undefined;
   };
-  const saved: string[] = [];
   if (input.request) {
     const { integrationId, operations } = input.request;
     const resources = overview.resources.filter(
@@ -176,38 +188,60 @@ export async function loginWithToken(input: {
     const collected = await awaitSignet(url, keyFile, requested.requestId, {
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    await saveCollectedSignet(
-      signetCredentialFile(directory, collected.signetId),
-      url,
-      keyFile,
-      collected,
+    await withHoldLock(directory, () =>
+      saveCollectedSignet(
+        signetCredentialFile(directory, collected.signetId),
+        url,
+        keyFile,
+        collected,
+      ),
     );
-    saved.push(collected.signetId);
-  } else {
-    const enrollable = enrollableSignets(overview).filter(
-      (signet) => !input.signetId || signet.id === input.signetId,
-    );
-    if (input.signetId && !enrollable.length)
+    await saveKingdomUrl(input.home, url);
+    return { url, signetIds: [collected.signetId] };
+  }
+  const enrollable = enrollableSignets(overview);
+  let chosen: typeof enrollable;
+  if (input.signetId) {
+    chosen = enrollable.filter((signet) => signet.id === input.signetId);
+    if (!chosen.length)
       throw Error(`Signet ${input.signetId} isn't issued to you, or is revoked, closed or expired`);
-    for (const signet of enrollable) {
-      const credentialFile = signetCredentialFile(directory, signet.id);
-      if (existsSync(credentialFile) && !input.signetId) continue;
-      const enrolled = await enrollSignet(url, keyFile, input.apiToken, {
+  } else {
+    const held = new Set((await heldCredentials(directory)).map((item) => item.signetId));
+    const candidates = enrollable.flatMap((signet): EnrollCandidate[] => {
+      const family = integrationFamily(overview, signet.integrationId);
+      return family && !held.has(signet.id)
+        ? [{ signetId: signet.id, name: signet.name, integrationId: signet.integrationId, family }]
+        : [];
+    });
+    if (!candidates.length) {
+      await saveKingdomUrl(input.home, url);
+      return { url, signetIds: [] };
+    }
+    if (!input.confirm || !(await input.confirm(candidates)))
+      throw Error(
+        'Nothing enrolled: confirm the Signets listed (--yes when not interactive), or name one with --signet',
+      );
+    const ids = new Set(candidates.map((candidate) => candidate.signetId));
+    chosen = enrollable.filter((signet) => ids.has(signet.id));
+  }
+  const enrolled = await holdPersonSignets(
+    url,
+    keyFile,
+    directory,
+    input.apiToken,
+    chosen.map((signet) => {
+      const owner = ownerOf(signet.integrationId);
+      return {
         signetId: signet.id,
         expectedRevision: signet.currentRevision,
-        name,
-      });
-      const owner = ownerOf(signet.integrationId);
-      await saveCollectedSignet(credentialFile, url, keyFile, {
-        ...enrolled,
         integrationId: signet.integrationId,
         ...(owner ? { owner } : {}),
-      });
-      saved.push(signet.id);
-    }
-  }
+      };
+    }),
+    { name, replace: Boolean(input.signetId) },
+  );
   await saveKingdomUrl(input.home, url);
-  return { url, signetIds: saved };
+  return { url, signetIds: enrolled.flatMap((item) => (item.enrolled ? [item.signetId] : [])) };
 }
 
 const uuid = z.uuid();
@@ -254,17 +288,37 @@ export async function loginWithSignet(input: {
 
 /**
  * `kcp logout`: withdraws an open pairing and deletes this machine's key and Signets for one
- * Kingdom. Revoking the Signets and the KCP integration stays with Kingdom.
+ * Kingdom. Revoking them stays with Kingdom, so it returns what the owner should revoke there; a
+ * withdrawal Kingdom refused is reported, and the local files go regardless.
  */
 export async function logout(home: string, url: string) {
-  const { directory } = installationPaths(home, url);
+  const origin = kingdomUrl(url);
+  const { directory } = installationPaths(home, origin);
   const held = await heldCredentials(directory);
-  const withdrawn = await withdrawRegistration(home, url).catch(() => []);
+  const paired = await pairedInstallation(home, origin);
+  const withdrawal = await withdrawRegistration(home, origin).then(
+    (ids) => ({ ids, error: null }),
+    (error: unknown) => ({
+      ids: [] as string[],
+      error: error instanceof Error ? error.message : 'Kingdom did not answer',
+    }),
+  );
   await rm(directory, { recursive: true, force: true });
+  const signetIds = [
+    ...new Set([
+      ...held.map((credential) => credential.signetId),
+      ...(paired ? [paired.signetId] : []),
+    ]),
+  ];
   return {
-    url: kingdomUrl(url),
+    url: origin,
     removedSignetIds: held.map((credential) => credential.signetId),
-    withdrawnRegistrations: withdrawn,
+    withdrawnRegistrations: withdrawal.ids,
+    ...(withdrawal.error ? { withdrawError: withdrawal.error } : {}),
+    revokeInKingdom: {
+      signetIds,
+      ...(paired ? { integrationId: paired.integrationId } : {}),
+    },
   };
 }
 

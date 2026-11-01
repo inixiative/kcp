@@ -1,14 +1,33 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SignetHttpError } from '@inixiative/signet';
-import { SignetHolders } from '../src/holders';
+import {
+  installationPaths,
+  SignetHolders,
+  SignetHttpError,
+  writePrivateJson,
+} from '@inixiative/signet';
 import { NoOperationsError, type OperationParser } from '../src/operations';
 import { heldReach, RouteError, runCommand } from '../src/run';
 import { description, holdSignet, id, orgOwner, tribe } from './fixtures';
 
-const url = 'http://localhost:4100';
+/** A loopback Kingdom that only counts what reaches it. */
+let requests = 0;
+let kingdom: ReturnType<typeof Bun.serve>;
+let url = '';
+beforeAll(() => {
+  kingdom = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: () => {
+      requests++;
+      return new Response('not found', { status: 404 });
+    },
+  });
+  url = `http://127.0.0.1:${kingdom.port}`;
+});
+afterAll(() => kingdom.stop(true));
 const homes: string[] = [];
 afterEach(async () => {
   for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true });
@@ -20,23 +39,48 @@ const home = async () => {
 };
 
 const railway = { signetId: id(11), integrationId: id(1), owner: orgOwner(tribe) };
+/** Signet → the operation its description grants on resource id(21). */
+const granted: Record<string, string> = { [id(16)]: 'documents.read' };
+let described = 0;
 const holders = () =>
   new SignetHolders({
     describe: async ({ signetId }) => {
+      described++;
       if (signetId === id(19)) throw new SignetHttpError(403);
-      return description({
+      const answer = description({
         signetId,
         integrationId: id(1),
         provider: 'railway',
         resourceId: id(21),
       });
+      return {
+        ...answer,
+        operations: answer.operations.map((operation) => ({
+          ...operation,
+          key: granted[signetId] ?? 'documents.search',
+        })),
+      };
     },
   });
+const search: OperationParser = (_args, context) => {
+  const resource = context.resources[0];
+  return resource
+    ? { operation: 'documents.search', resourceId: resource.id, input: { query: 'deploy' } }
+    : { refused: 'no service' };
+};
 
 describe('runCommand', () => {
-  test('routes, then refuses: no operations are declared for the provider yet', async () => {
+  test('no parser for the provider: refused before any call to Kingdom', async () => {
     const kcpHome = await home();
     await holdSignet(kcpHome, url, railway);
+    // Paired, so a sync would otherwise call Kingdom first.
+    await writePrivateJson(join(installationPaths(kcpHome, url).directory, 'installation.json'), {
+      integrationId: id(80),
+      signetId: id(81),
+      owner: orgOwner(tribe),
+    });
+    requests = 0;
+    described = 0;
     const run = runCommand({
       argv: ['railway', 'logs'],
       home: kcpHome,
@@ -46,6 +90,8 @@ describe('runCommand', () => {
     });
     await expect(run).rejects.toThrow(NoOperationsError);
     await expect(run).rejects.toThrow(/No operations are declared for railway yet/);
+    expect(requests).toBe(0);
+    expect(described).toBe(0);
   });
   test('with nothing held, asks the owner before any parsing', async () => {
     const run = runCommand({
@@ -54,6 +100,7 @@ describe('runCommand', () => {
       url,
       cwd: '/',
       holders: holders(),
+      parsers: { github: () => ({ refused: 'never reached' }) },
     });
     await expect(run).rejects.toThrow(RouteError);
     await expect(run).rejects.toThrow(/Ask the integration's owner/);
@@ -116,6 +163,49 @@ describe('runCommand', () => {
     await expect(run).rejects.toThrow('railway: railway run is not an operation');
     await run.catch(() => {});
     expect(sent).toBe(false);
+  });
+});
+
+describe('several Signets on one integration', () => {
+  const execute = (seen: string[]) => async (file: string) => {
+    seen.push(file);
+    return null;
+  };
+  test('parses first, then runs through the Signet that grants the operation on the resource', async () => {
+    const kcpHome = await home();
+    await holdSignet(kcpHome, url, { ...railway, signetId: id(16) });
+    const { credentialFile } = await holdSignet(kcpHome, url, railway);
+    const seen: string[] = [];
+    await runCommand({
+      argv: ['-i', id(1), 'railway', 'logs'],
+      home: kcpHome,
+      url,
+      cwd: kcpHome,
+      holders: holders(),
+      parsers: { railway: search },
+      execute: execute(seen),
+    });
+    expect(seen).toEqual([credentialFile]);
+  });
+  test('none granting it is ambiguous, naming each --signet, and sends nothing', async () => {
+    const kcpHome = await home();
+    await holdSignet(kcpHome, url, { ...railway, signetId: id(16) });
+    await holdSignet(kcpHome, url, { ...railway, signetId: id(17) });
+    granted[id(17)] = 'documents.read';
+    const seen: string[] = [];
+    const run = runCommand({
+      argv: ['-i', id(1), 'railway', 'logs'],
+      home: kcpHome,
+      url,
+      cwd: kcpHome,
+      holders: holders(),
+      parsers: { railway: search },
+      execute: execute(seen),
+    });
+    await expect(run).rejects.toThrow(RouteError);
+    await expect(run).rejects.toThrow(new RegExp(`--signet ${id(16)}[\\s\\S]*--signet ${id(17)}`));
+    expect(seen).toEqual([]);
+    delete granted[id(17)];
   });
 });
 

@@ -58,6 +58,29 @@ describe('.foundry/kcp.json', () => {
     await writeFile(join(outer, '.foundry', 'kcp.json'), '{"providers":{}}');
     expect(findProjectFile(other)).toBeNull();
   });
+  test('outside a repo there is no mapping: a cwd without .git finds none', async () => {
+    const outer = await temporary();
+    const cwd = join(outer, 'scratch', 'deeper');
+    await mkdir(cwd, { recursive: true });
+    await mkdir(join(outer, 'scratch', '.foundry'));
+    await writeFile(join(outer, 'scratch', '.foundry', 'kcp.json'), '{"providers":{}}');
+    expect(findProjectFile(cwd, outer)).toBeNull();
+  });
+  test('never walks above home, even to a repo there', async () => {
+    const outer = await temporary();
+    const home = join(outer, 'home');
+    const cwd = join(home, 'notes');
+    await mkdir(cwd, { recursive: true });
+    await mkdir(join(outer, '.git'));
+    await mkdir(join(outer, '.foundry'));
+    await writeFile(join(outer, '.foundry', 'kcp.json'), '{"providers":{}}');
+    expect(findProjectFile(cwd, home)).toBeNull();
+    await mkdir(join(home, '.git'));
+    expect(findProjectFile(cwd, home)).toBeNull();
+    await mkdir(join(home, '.foundry'));
+    await writeFile(join(home, '.foundry', 'kcp.json'), '{"providers":{}}');
+    expect(findProjectFile(cwd, home)).toBe(join(home, '.foundry', 'kcp.json'));
+  });
   test('an invalid file says where and why', async () => {
     const directory = await temporary();
     const file = join(directory, 'kcp.json');

@@ -1,7 +1,6 @@
 import { join } from 'node:path';
-import { generateSignetKey, writePrivateJson } from '@inixiative/signet';
+import { generateSignetKey, installationPaths, writePrivateJson } from '@inixiative/signet';
 import type { OwnerRef } from '@inixiative/signet/contracts';
-import { installationPaths } from '../src/installation';
 
 export const id = (n: number) => `01a196f0-a68e-7d81-a8cd-${String(n).padStart(12, '0')}`;
 export const token43 = (seed: string) => seed.repeat(43).slice(0, 43);
@@ -108,6 +107,22 @@ export const overview = () => {
         ...orgOwner(tribe),
       },
       {
+        id: id(3),
+        name: 'Tribe GitHub',
+        provider: 'githubOrganization',
+        enabled: true,
+        deletedAt: null,
+        ...orgOwner(tribe),
+      },
+      {
+        id: id(5),
+        name: 'Tribe Gmail',
+        provider: 'gmail',
+        enabled: true,
+        deletedAt: null,
+        ...orgOwner(tribe),
+      },
+      {
         id: id(2),
         name: 'Old',
         provider: 'github',
@@ -149,6 +164,32 @@ export const overview = () => {
         deletedAt: null,
       },
       {
+        id: id(14),
+        name: 'GitHub for Aron',
+        integrationId: id(3),
+        recipientModel: 'User',
+        recipientUserId: viewer,
+        recipientIntegrationId: null,
+        currentRevision: 1,
+        expiresAt: null,
+        revokedAt: null,
+        closedAt: null,
+        deletedAt: null,
+      },
+      {
+        id: id(15),
+        name: 'Gmail for Aron',
+        integrationId: id(5),
+        recipientModel: 'User',
+        recipientUserId: viewer,
+        recipientIntegrationId: null,
+        currentRevision: 1,
+        expiresAt: null,
+        revokedAt: null,
+        closedAt: null,
+        deletedAt: null,
+      },
+      {
         id: id(12),
         name: 'Revoked',
         integrationId: id(1),
@@ -175,6 +216,10 @@ export const overview = () => {
         deletedAt: null,
       },
     ],
-    providers: [],
+    providers: [
+      { key: 'railway', name: 'Railway' },
+      { key: 'githubOrganization', name: 'GitHub organization', family: 'github' },
+      { key: 'gmail', name: 'Gmail', family: 'google' },
+    ],
   };
 };
