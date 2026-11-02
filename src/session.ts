@@ -182,7 +182,11 @@ export async function loginWithToken(input: {
       expiresAt: null,
       maxRequests: null,
       maxConcurrent: 1,
-      resources: resources.map((resource) => ({ resourceId: resource.id, operations })),
+      resources: resources.map((resource) => ({
+        resourceModel: 'IntegrationResource' as const,
+        integrationResourceId: resource.id,
+        operations: { picks: operations },
+      })),
     });
     input.onReview?.({ reviewCode: requested.reviewCode, expiresAt: requested.expiresAt });
     const collected = await awaitSignet(url, keyFile, requested.requestId, {
