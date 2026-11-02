@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/kcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "KCP, the Kingdom CLI proxy: sign in to Kingdom once, then run CLI commands as typed Signet operations Kingdom executes with the credential it holds.",
   "type": "module",
   "main": "src/index.ts",
