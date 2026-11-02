@@ -67,7 +67,7 @@ export const description = (signet: {
           name: 'api',
           kind: 'service',
           integrationId: signet.integrationId,
-          lens: {},
+          lens: [],
         },
       ],
     },

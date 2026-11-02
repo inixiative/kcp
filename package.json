@@ -31,7 +31,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@inixiative/signet": "^0.8.0",
+    "@inixiative/signet": "^0.12.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
