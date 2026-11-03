@@ -4,7 +4,7 @@
 
 KCP, the Kingdom CLI Proxy: run your provider CLIs through Kingdom with no credentials on your machine. Kingdom runs the command and streams the output back. **In progress:** the client (`kcp login`, `status`, `map`) is built; no operations are declared yet and Kingdom's runner is not built, so commands do not run end to end.
 
-Agents kept stalling on expired CLI logins (Railway, Infisical) and on a plaintext Kingdom token in a dotfile. With KCP you sign in to Kingdom once, and a command such as `railway logs` or `gh pr list` becomes a Signet `execute` call. Kingdom holds each integration's long-lived credential, runs the real CLI on its runner, and streams the output back. The credential never reaches the machine, and Kingdom never receives a raw argument list: KCP parses the command into a declared operation's typed input, and a command that parses into no operation has nothing to grant, so it is never sent.
+Agents kept stalling on expired CLI logins (Railway, Infisical) and on a plaintext Kingdom token in a dotfile. By design, you sign in to Kingdom once, and a command such as `railway logs` or `gh pr list` becomes a Signet `execute` call. Kingdom holds each integration's long-lived credential, runs the real CLI on its runner, and streams the output back. The credential never reaches the machine, and Kingdom never receives a raw argument list: KCP parses the command into a declared operation's typed input, and a command that parses into no operation has nothing to grant, so it is never sent.
 
 The design is Kingdom's `docs/OPERATOR-ACCESS.md`. KCP is the thin client in it, built on [`@inixiative/signet`](https://github.com/inixiative/signet), which holds the one implementation of keys, DPoP proofs, pairing and private files.
 
