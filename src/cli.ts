@@ -103,7 +103,7 @@ const confirmEnrollment =
     console.error(`Signets issued to you that KCP would enroll on this machine:`);
     for (const candidate of candidates)
       console.error(
-        `  ${candidate.family}  ${candidate.name}  --signet ${candidate.signetId}  (integration ${candidate.integrationId})`,
+        `  ${candidate.name}  --signet ${candidate.signetId}  (${candidate.integrations.map(({ family, integrationId }) => `${family} ${integrationId}`).join(', ')})`,
       );
     if (yes) return true;
     if (!io.interactive || stdinUsed) return false;

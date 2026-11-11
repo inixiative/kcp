@@ -53,7 +53,11 @@ export type HeldReach = Reachable &
     resources: OperationResource[];
   };
 
-/** What this machine's held Signets reach, as Kingdom describes them; revoked or unread ones are left out. */
+/**
+ * What this machine's held Signets reach, as Kingdom describes them: one entry per Signet and
+ * integration its resources sit on (a Signet has no integration of its own), each with that
+ * integration's resources and grants. Revoked or unread Signets are left out.
+ */
 export async function heldReach(home: string, url: string, holders = new SignetHolders()) {
   const held = await heldCredentials(installationPaths(home, url).directory);
   const views: HolderView[] = await Promise.all(
@@ -67,14 +71,23 @@ export async function heldReach(home: string, url: string, holders = new SignetH
   return held.flatMap((credential, index): HeldReach[] => {
     const description = views[index]?.description;
     if (!description) return [];
-    const resources = new Map<string, OperationResource>();
+    const integrations = new Map<string, string>();
     for (const operation of description.operations)
       for (const resource of operation.resources)
-        resources.set(resource.id, { id: resource.id, name: resource.name, kind: resource.kind });
-    return [
-      {
-        integrationId: description.integrationId,
-        provider: description.provider,
+        integrations.set(resource.integrationId, resource.provider);
+    return [...integrations].map(([integrationId, provider]) => {
+      const resources = new Map<string, OperationResource>();
+      for (const operation of description.operations)
+        for (const resource of operation.resources)
+          if (resource.integrationId === integrationId)
+            resources.set(resource.id, {
+              id: resource.id,
+              name: resource.name,
+              kind: resource.kind,
+            });
+      return {
+        integrationId,
+        provider,
         owner: credential.owner ?? null,
         name: description.name,
         signetId: credential.signetId,
@@ -82,10 +95,12 @@ export async function heldReach(home: string, url: string, holders = new SignetH
         resources: [...resources.values()],
         grants: description.operations.map((operation) => ({
           operation: operation.key,
-          resourceIds: operation.resources.map((resource) => resource.id),
+          resourceIds: operation.resources
+            .filter((resource) => resource.integrationId === integrationId)
+            .map((resource) => resource.id),
         })),
-      },
-    ];
+      };
+    });
   });
 }
 
@@ -131,7 +146,9 @@ export async function runCommand(input: {
   if (route.status !== 'resolved') throw new RouteError(route);
   // In the route's (sorted) order, so the pick and the listing never depend on directory order.
   const candidates = route.signetIds.flatMap((signetId) =>
-    reach.filter((item) => item.signetId === signetId),
+    reach.filter(
+      (item) => item.signetId === signetId && item.integrationId === route.integrationId,
+    ),
   );
   const resources = [
     ...new Map(

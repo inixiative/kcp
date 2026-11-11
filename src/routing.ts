@@ -2,7 +2,10 @@ import { type OwnerRef, ownerKey } from '@inixiative/signet/contracts';
 import { ownerMatches } from './owner';
 import type { OwnerSelector, ProviderFamily, Selection } from './selectors';
 
-/** An integration this machine can see, and the Signet it holds on it, if any. */
+/**
+ * An integration this machine can see, and a Signet it holds that reaches it, if any. A Signet
+ * reaching several integrations appears once per integration.
+ */
 export type Reachable = {
   integrationId: string;
   /** Kingdom's provider name; a provider family is named the same. */
@@ -147,29 +150,44 @@ function ownerContradiction(
 export function resolveRoute(input: RouteInput): Route {
   const { selection } = input;
   if (selection.signetId) {
-    const held = input.reachable.find((item) => item.signetId === selection.signetId);
-    if (!held)
+    const signetId = selection.signetId;
+    const held = input.reachable.filter((item) => item.signetId === signetId);
+    if (!held.length)
       return {
         status: 'error',
-        reason: `This machine holds no Signet ${selection.signetId}; kcp login --signet ${selection.signetId}`,
+        reason: `This machine holds no Signet ${signetId}; kcp login --signet ${signetId}`,
       };
-    if (selection.integrationId && selection.integrationId !== held.integrationId)
+    // A Signet may reach several integrations: `-i` narrows to one, then the command's family.
+    const named = selection.integrationId
+      ? held.filter((item) => item.integrationId === selection.integrationId)
+      : held;
+    if (!named.length)
       return {
         status: 'error',
-        reason: `Signet ${selection.signetId} is on integration ${held.integrationId}, not -i ${selection.integrationId}`,
+        reason: `Signet ${signetId} reaches no integration ${selection.integrationId}; it reaches ${held.map((item) => item.integrationId).join(', ')}`,
       };
-    const contradiction = ownerContradiction(selection.owner, [held], '--signet');
+    const contradiction = ownerContradiction(selection.owner, named, '--signet');
     if (contradiction) return contradiction;
-    if (held.provider !== input.family)
+    const onFamily = named.filter((item) => item.provider === input.family);
+    const [only] = onFamily;
+    if (!only)
       return {
         status: 'error',
-        reason: `Signet ${selection.signetId} is on a ${held.provider ?? 'non-provider'} integration, not ${input.family}`,
+        reason: `Signet ${signetId} reaches no ${input.family} integration (${named.map((item) => item.provider ?? 'non-provider').join(', ')})`,
+      };
+    if (onFamily.length > 1)
+      return {
+        status: 'ambiguous',
+        family: input.family,
+        choose: 'integration',
+        candidates: onFamily,
+        reason: `Signet ${signetId} reaches ${onFamily.length} ${input.family} integrations; choose one with -i`,
       };
     return {
       status: 'resolved',
       via: 'signet',
-      integrationId: held.integrationId,
-      signetIds: [selection.signetId],
+      integrationId: only.integrationId,
+      signetIds: [signetId],
     };
   }
   if (selection.integrationId) {

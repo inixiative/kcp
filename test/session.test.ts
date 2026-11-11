@@ -23,6 +23,7 @@ import {
 import {
   credentials,
   description,
+  grantRow,
   holdSignet,
   id,
   orgOwner,
@@ -114,8 +115,16 @@ describe('login', () => {
     });
     expect(offered).toEqual([
       [
-        { signetId: id(11), name: 'Railway for Aron', integrationId: id(1), family: 'railway' },
-        { signetId: id(14), name: 'GitHub for Aron', integrationId: id(3), family: 'github' },
+        {
+          signetId: id(11),
+          name: 'Railway for Aron',
+          integrations: [{ integrationId: id(1), family: 'railway' }],
+        },
+        {
+          signetId: id(14),
+          name: 'GitHub for Aron',
+          integrations: [{ integrationId: id(3), family: 'github' }],
+        },
       ],
     ]);
     expect(result).toEqual({ url, signetIds: [id(11), id(14)] });
@@ -127,7 +136,6 @@ describe('login', () => {
     const { directory } = installationPaths(kcpHome, url);
     expect(await readPrivateJson(join(directory, `signet-${id(11)}.json`))).toMatchObject({
       signetId: id(11),
-      integrationId: id(1),
       owner: orgOwner(tribe),
       url,
     });
@@ -183,6 +191,7 @@ describe('login', () => {
         { ...template, id: id(42), recipientModel: 'SpaceUser', recipientUserId: viewer },
         { ...template, id: id(43), recipientModel: 'OrganizationUser', recipientUserId: id(600) },
       ],
+      signetResources: [41, 42, 43].map((n) => grantRow(id(n), template.currentRevision, id(1))),
     };
     const offered: string[] = [];
     await loginWithToken({
@@ -221,7 +230,6 @@ describe('login', () => {
     await writePrivateJson(file, {
       ...credentials(),
       signetId: id(31),
-      integrationId: id(1),
       url: 'http://localhost:4100',
       keyFile,
     });
@@ -249,14 +257,13 @@ describe('login', () => {
 describe('status and logout', () => {
   test('status describes each held Signet; logout deletes the key and Signets and names what to revoke', async () => {
     const kcpHome = await home();
-    await holdSignet(kcpHome, url, {
-      signetId: id(11),
-      integrationId: id(1),
-      owner: orgOwner(tribe),
-    });
+    await holdSignet(kcpHome, url, { signetId: id(11), owner: orgOwner(tribe) });
     const holders = new SignetHolders({
       describe: async ({ signetId }) =>
-        description({ signetId, integrationId: id(1), provider: 'railway', resourceId: id(21) }),
+        description({
+          signetId,
+          resources: [{ integrationId: id(1), provider: 'railway', resourceId: id(21) }],
+        }),
     });
     const current = await status(kcpHome, url, holders);
     expect(current).toMatchObject({
@@ -267,8 +274,7 @@ describe('status and logout', () => {
       signets: [
         {
           signetId: id(11),
-          integrationId: id(1),
-          provider: 'railway',
+          integrations: [{ integrationId: id(1), provider: 'railway' }],
           owner: orgOwner(tribe),
           status: 'described',
         },
@@ -288,7 +294,6 @@ describe('status and logout', () => {
     const kcpHome = await home();
     const { directory } = await holdSignet(kcpHome, url, {
       signetId: id(11),
-      integrationId: id(1),
       owner: orgOwner(tribe),
     });
     await writePrivateJson(join(directory, 'installation.json'), {

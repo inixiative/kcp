@@ -40,7 +40,6 @@ export const overviewSchema = z.object({
     z.object({
       id: z.uuid(),
       name: z.string(),
-      integrationId: z.uuid(),
       recipientModel: z.string(),
       recipientUserId: z.uuid().nullable(),
       recipientIntegrationId: z.uuid().nullable(),
@@ -49,6 +48,16 @@ export const overviewSchema = z.object({
       revokedAt: z.coerce.date().nullable(),
       closedAt: z.coerce.date().nullable(),
       deletedAt: z.coerce.date().nullable(),
+    }),
+  ),
+  /**
+   * Every revision's grant rows of the Signets listed. A Signet has no integration of its own: it
+   * reaches the integrations its current revision's integration-resource rows name.
+   */
+  signetResources: z.array(
+    z.object({
+      revision: z.object({ signetId: z.uuid(), number: z.number().int() }),
+      grant: z.object({ resourceModel: z.string(), integrationId: z.uuid().optional() }),
     }),
   ),
   /** Kingdom's provider catalog: a provider kind (`githubOrganization`) names its `family` (`github`). */
@@ -92,6 +101,19 @@ export const enrollableSignets = (overview: Overview, now = new Date()) =>
       (!signet.expiresAt || signet.expiresAt > now),
   );
 
+/** The integrations a Signet's current revision grants resources on, in first-seen order. */
+export const signetIntegrationIds = (overview: Overview, signet: OverviewSignet) => [
+  ...new Set(
+    overview.signetResources.flatMap(({ revision, grant }) =>
+      revision.signetId === signet.id &&
+      revision.number === signet.currentRevision &&
+      grant.integrationId
+        ? [grant.integrationId]
+        : [],
+    ),
+  ),
+];
+
 /** The provider family KCP serves that an integration belongs to, by Kingdom's catalog; null for any other. */
 export function integrationFamily(
   overview: Overview,
@@ -126,7 +148,11 @@ export function kingdomMap(overview: Overview, heldSignetIds: ReadonlySet<string
   const live = overview.integrations.filter((integration) => !integration.deletedAt);
   const heldOn = (integrationId: string) =>
     overview.signets
-      .filter((signet) => signet.integrationId === integrationId && heldSignetIds.has(signet.id))
+      .filter(
+        (signet) =>
+          heldSignetIds.has(signet.id) &&
+          signetIntegrationIds(overview, signet).includes(integrationId),
+      )
       .map((signet) => signet.id);
   const groups = new Map<string, MapOwner>();
   for (const group of overview.integrationOwners) {

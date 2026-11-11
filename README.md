@@ -54,9 +54,9 @@ Every id is a UUID. A flag repeated with a different id and an unknown flag befo
 
 ## Routing
 
-`resolveRoute` is a pure function over what this machine can reach (each held Signet, as `access/describe` reports it). It follows OPERATOR-ACCESS §5:
+`resolveRoute` is a pure function over what this machine can reach (each held Signet, as `access/describe` reports it). A Signet has no integration of its own: each described resource names its integration and provider, so a Signet reaching several integrations is one reachable entry per integration. It follows OPERATOR-ACCESS §5:
 
-1. `--signet` wins. It must be held here, on the CLI's provider, and on `-i`'s integration if both are given.
+1. `--signet` wins. It must be held here and reach an integration of the CLI's provider (and `-i`'s integration, if both are given). When it reaches several integrations of that provider, the route is `ambiguous`, listing each `-i`.
 2. `-i` next.
 3. The owner flags: the owner's one integration of that provider.
 4. With no flags, the repo's `.foundry/kcp.json`.
