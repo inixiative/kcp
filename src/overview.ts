@@ -51,12 +51,12 @@ export const overviewSchema = z.object({
     }),
   ),
   /**
-   * Every revision's grant rows of the Signets listed. A Signet has no integration of its own: it
-   * reaches the integrations its current revision's integration-resource rows name.
+   * The live grant rows of the Signets listed. A Signet has no integration of its own: it reaches
+   * the integrations its integration-resource rows name.
    */
   signetResources: z.array(
     z.object({
-      revision: z.object({ signetId: z.uuid(), number: z.number().int() }),
+      signetId: z.uuid(),
       grant: z.object({ resourceModel: z.string(), integrationId: z.uuid().optional() }),
     }),
   ),
@@ -101,15 +101,11 @@ export const enrollableSignets = (overview: Overview, now = new Date()) =>
       (!signet.expiresAt || signet.expiresAt > now),
   );
 
-/** The integrations a Signet's current revision grants resources on, in first-seen order. */
+/** The integrations a Signet grants resources on, in first-seen order. */
 export const signetIntegrationIds = (overview: Overview, signet: OverviewSignet) => [
   ...new Set(
-    overview.signetResources.flatMap(({ revision, grant }) =>
-      revision.signetId === signet.id &&
-      revision.number === signet.currentRevision &&
-      grant.integrationId
-        ? [grant.integrationId]
-        : [],
+    overview.signetResources.flatMap(({ signetId, grant }) =>
+      signetId === signet.id && grant.integrationId ? [grant.integrationId] : [],
     ),
   ),
 ];

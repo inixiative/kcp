@@ -191,7 +191,7 @@ describe('login', () => {
         { ...template, id: id(42), recipientModel: 'SpaceUser', recipientUserId: viewer },
         { ...template, id: id(43), recipientModel: 'OrganizationUser', recipientUserId: id(600) },
       ],
-      signetResources: [41, 42, 43].map((n) => grantRow(id(n), template.currentRevision, id(1))),
+      signetResources: [41, 42, 43].map((n) => grantRow(id(n), id(1))),
     };
     const offered: string[] = [];
     await loginWithToken({
