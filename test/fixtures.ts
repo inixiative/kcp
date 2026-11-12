@@ -82,10 +82,10 @@ const ownerGroup = (owner: OwnerRef, name: string) => ({
   ...owner,
 });
 
-/** One grant row of a Signet revision, on a resource of `integrationId`. */
-export const grantRow = (signetId: string, number: number, integrationId: string) => ({
+/** One live grant row of a Signet, on a resource of `integrationId`. */
+export const grantRow = (signetId: string, integrationId: string) => ({
   id: Bun.randomUUIDv7(),
-  revision: { signetId, number },
+  signetId,
   grant: {
     resourceModel: 'IntegrationResource',
     integrationResourceId: Bun.randomUUIDv7(),
@@ -224,13 +224,11 @@ export const overview = () => {
       },
     ],
     signetResources: [
-      // A superseded revision's row never counts toward a Signet's reach.
-      grantRow(id(11), 2, id(3)),
-      grantRow(id(11), 3, id(1)),
-      grantRow(id(14), 1, id(3)),
-      grantRow(id(15), 1, id(5)),
-      grantRow(id(12), 1, id(1)),
-      grantRow(id(13), 1, id(1)),
+      grantRow(id(11), id(1)),
+      grantRow(id(14), id(3)),
+      grantRow(id(15), id(5)),
+      grantRow(id(12), id(1)),
+      grantRow(id(13), id(1)),
     ],
     providers: [
       { key: 'railway', name: 'Railway' },
