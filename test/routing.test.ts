@@ -53,6 +53,34 @@ const route = (
   });
 
 describe('resolveRoute (§5 order)', () => {
+  test('--signet reaching several integrations: the family narrows, then -i, else it is ambiguous', () => {
+    const spanning: Reachable[] = [
+      { ...tribeRailway, signetId: id(20) },
+      { ...inixiativeRailway, signetId: id(20) },
+      { ...aronGithub, signetId: id(20) },
+    ];
+    const signet = (selection: Selection, family: 'railway' | 'github' = 'railway') =>
+      resolveRoute({ family, selection: { signetId: id(20), ...selection }, reachable: spanning });
+    expect(signet({}, 'github')).toEqual({
+      status: 'resolved',
+      via: 'signet',
+      integrationId: id(3),
+      signetIds: [id(20)],
+    });
+    expect(signet({})).toMatchObject({
+      status: 'ambiguous',
+      choose: 'integration',
+      candidates: [{ integrationId: id(1) }, { integrationId: id(2) }],
+    });
+    expect(signet({ integrationId: id(2) })).toMatchObject({
+      status: 'resolved',
+      integrationId: id(2),
+    });
+    expect(signet({ integrationId: id(3) })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining('reaches no railway integration'),
+    });
+  });
   test('--signet wins over the project mapping', () => {
     expect(route({ signetId: id(12) }, { project: { integrationId: id(1) } })).toEqual({
       status: 'resolved',
@@ -76,7 +104,7 @@ describe('resolveRoute (§5 order)', () => {
     expect(route({ signetId: id(99) }).status).toBe('error');
     expect(route({ signetId: id(12), integrationId: id(1) })).toMatchObject({
       status: 'error',
-      reason: expect.stringContaining('not -i'),
+      reason: expect.stringContaining(`reaches no integration ${id(1)}`),
     });
     expect(route({ signetId: id(13) })).toMatchObject({
       status: 'error',

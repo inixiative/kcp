@@ -32,7 +32,7 @@ export const credentials = () => ({
 export async function holdSignet(
   home: string,
   url: string,
-  signet: { signetId: string; integrationId: string; owner?: OwnerRef },
+  signet: { signetId: string; owner?: OwnerRef },
 ) {
   const { directory, keyFile } = installationPaths(home, url);
   await writePrivateJson(keyFile, generateSignetKey());
@@ -41,16 +41,15 @@ export async function holdSignet(
   return { credentialFile, keyFile, directory };
 }
 
-/** An `access/describe` answer for a Signet on one integration with one resource. */
+/**
+ * An `access/describe` answer for a Signet with one resource on each integration named (a Signet
+ * has no integration of its own; each resource names its own).
+ */
 export const description = (signet: {
   signetId: string;
-  integrationId: string;
-  provider: string | null;
-  resourceId: string;
+  resources: { integrationId: string; provider: string; resourceId: string }[];
 }) => ({
   signetId: signet.signetId,
-  integrationId: signet.integrationId,
-  provider: signet.provider,
   name: 'Agent access',
   expiresAt: null,
   lifecycle: 'ongoing',
@@ -61,15 +60,14 @@ export const description = (signet: {
     {
       key: 'logs.read',
       name: 'Read logs',
-      resources: [
-        {
-          id: signet.resourceId,
-          name: 'api',
-          kind: 'service',
-          integrationId: signet.integrationId,
-          lens: [],
-        },
-      ],
+      resources: signet.resources.map((resource) => ({
+        id: resource.resourceId,
+        name: 'api',
+        kind: 'service',
+        integrationId: resource.integrationId,
+        provider: resource.provider,
+        lens: [],
+      })),
     },
   ],
   holder: null,
@@ -82,6 +80,20 @@ const ownerGroup = (owner: OwnerRef, name: string) => ({
   name,
   membershipId: null,
   ...owner,
+});
+
+/** One grant row of a Signet revision, on a resource of `integrationId`. */
+export const grantRow = (signetId: string, number: number, integrationId: string) => ({
+  id: Bun.randomUUIDv7(),
+  revision: { signetId, number },
+  grant: {
+    resourceModel: 'IntegrationResource',
+    integrationResourceId: Bun.randomUUIDv7(),
+    kind: 'service',
+    integrationId,
+    full: true,
+  },
+  selection: null,
 });
 
 /** A trimmed `/me/overview`: the viewer, Tribe's Railway, and one Signet issued to the viewer. */
@@ -153,7 +165,6 @@ export const overview = () => {
       {
         id: id(11),
         name: 'Railway for Aron',
-        integrationId: id(1),
         recipientModel: 'User',
         recipientUserId: viewer,
         recipientIntegrationId: null,
@@ -166,7 +177,6 @@ export const overview = () => {
       {
         id: id(14),
         name: 'GitHub for Aron',
-        integrationId: id(3),
         recipientModel: 'User',
         recipientUserId: viewer,
         recipientIntegrationId: null,
@@ -179,7 +189,6 @@ export const overview = () => {
       {
         id: id(15),
         name: 'Gmail for Aron',
-        integrationId: id(5),
         recipientModel: 'User',
         recipientUserId: viewer,
         recipientIntegrationId: null,
@@ -192,7 +201,6 @@ export const overview = () => {
       {
         id: id(12),
         name: 'Revoked',
-        integrationId: id(1),
         recipientModel: 'User',
         recipientUserId: viewer,
         recipientIntegrationId: null,
@@ -205,7 +213,6 @@ export const overview = () => {
       {
         id: id(13),
         name: 'Someone else',
-        integrationId: id(1),
         recipientModel: 'User',
         recipientUserId: id(600),
         recipientIntegrationId: null,
@@ -215,6 +222,15 @@ export const overview = () => {
         closedAt: null,
         deletedAt: null,
       },
+    ],
+    signetResources: [
+      // A superseded revision's row never counts toward a Signet's reach.
+      grantRow(id(11), 2, id(3)),
+      grantRow(id(11), 3, id(1)),
+      grantRow(id(14), 1, id(3)),
+      grantRow(id(15), 1, id(5)),
+      grantRow(id(12), 1, id(1)),
+      grantRow(id(13), 1, id(1)),
     ],
     providers: [
       { key: 'railway', name: 'Railway' },

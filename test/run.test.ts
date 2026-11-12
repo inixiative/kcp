@@ -38,7 +38,7 @@ const home = async () => {
   return directory;
 };
 
-const railway = { signetId: id(11), integrationId: id(1), owner: orgOwner(tribe) };
+const railway = { signetId: id(11), owner: orgOwner(tribe) };
 /** Signet → the operation its description grants on resource id(21). */
 const granted: Record<string, string> = { [id(16)]: 'documents.read' };
 let described = 0;
@@ -49,9 +49,13 @@ const holders = () =>
       if (signetId === id(19)) throw new SignetHttpError(403);
       const answer = description({
         signetId,
-        integrationId: id(1),
-        provider: 'railway',
-        resourceId: id(21),
+        resources: [
+          { integrationId: id(1), provider: 'railway', resourceId: id(21) },
+          // id(20) reaches a second Railway integration too.
+          ...(signetId === id(20)
+            ? [{ integrationId: id(2), provider: 'railway', resourceId: id(22) }]
+            : []),
+        ],
       });
       return {
         ...answer,
@@ -166,6 +170,48 @@ describe('runCommand', () => {
   });
 });
 
+describe('one Signet on several integrations', () => {
+  test('--signet alone is ambiguous; -i picks the integration and only its resources are parsed', async () => {
+    const kcpHome = await home();
+    const { credentialFile } = await holdSignet(kcpHome, url, { ...railway, signetId: id(20) });
+    const ambiguous = runCommand({
+      argv: ['--signet', id(20), 'railway', 'logs'],
+      home: kcpHome,
+      url,
+      cwd: kcpHome,
+      holders: holders(),
+      parsers: { railway: search },
+    });
+    await expect(ambiguous).rejects.toThrow(RouteError);
+    await expect(ambiguous).rejects.toThrow(
+      new RegExp(`reaches 2 railway integrations[\\s\\S]*-i ${id(1)}[\\s\\S]*-i ${id(2)}`),
+    );
+    const executed: unknown[] = [];
+    await runCommand({
+      argv: ['--signet', id(20), '-i', id(2), 'railway', 'logs'],
+      home: kcpHome,
+      url,
+      cwd: kcpHome,
+      holders: holders(),
+      parsers: { railway: search },
+      execute: async (file, request) => {
+        executed.push({ file, request });
+        return null;
+      },
+    });
+    expect(executed).toEqual([
+      {
+        file: credentialFile,
+        request: {
+          integrationId: id(2),
+          operation: 'documents.search',
+          input: { resourceId: id(22), query: 'deploy', limit: 20 },
+        },
+      },
+    ]);
+  });
+});
+
 describe('several Signets on one integration', () => {
   const execute = (seen: string[]) => async (file: string) => {
     seen.push(file);
@@ -213,7 +259,7 @@ describe('heldReach', () => {
   test('leaves out Signets Kingdom refuses', async () => {
     const kcpHome = await home();
     await holdSignet(kcpHome, url, railway);
-    await holdSignet(kcpHome, url, { signetId: id(19), integrationId: id(1) });
+    await holdSignet(kcpHome, url, { signetId: id(19) });
     const reach = await heldReach(kcpHome, url, holders());
     expect(reach.map((item) => item.signetId)).toEqual([id(11)]);
     expect(reach[0]).toMatchObject({ provider: 'railway', owner: orgOwner(tribe) });

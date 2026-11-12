@@ -29,11 +29,18 @@ import {
   type InstallationKind,
   installationKindSchema,
   type OwnerRef,
+  ownerKey,
   ownerRefSchema,
 } from '@inixiative/signet/contracts';
 import { z } from 'zod';
 import { saveKingdomUrl } from './kingdom';
-import { enrollableSignets, integrationFamily, readOverview } from './overview';
+import {
+  enrollableSignets,
+  integrationFamily,
+  type OverviewSignet,
+  readOverview,
+  signetIntegrationIds,
+} from './overview';
 import type { ProviderFamily } from './selectors';
 
 /** The installation kind a KCP pairs as. Kingdom and `@inixiative/signet` don't declare it yet. */
@@ -108,7 +115,6 @@ export async function pairKcp(input: {
       resources: [],
       expiresAt: null,
       maxRequests: null,
-      maxConcurrent: 4,
     },
     onReview: input.onReview,
     onError: (error) =>
@@ -132,12 +138,14 @@ export async function pairKcp(input: {
   };
 }
 
-/** A Signet `kcp login --token` would enroll, as the person is asked to confirm it. */
+/**
+ * A Signet `kcp login --token` would enroll, as the person is asked to confirm it, with the
+ * integrations it reaches whose provider family KCP serves.
+ */
 export type EnrollCandidate = {
   signetId: string;
   name: string;
-  integrationId: string;
-  family: ProviderFamily;
+  integrations: { integrationId: string; family: ProviderFamily }[];
 };
 
 /**
@@ -168,6 +176,14 @@ export async function loginWithToken(input: {
     const integration = overview.integrations.find((item) => item.id === integrationId);
     return integration ? ownerRefSchema.parse(integration) : undefined;
   };
+  /** The owner of every integration the Signet reaches, when they share one; else none is recorded. */
+  const signetOwner = (signet: OverviewSignet): OwnerRef | undefined => {
+    const owners = signetIntegrationIds(overview, signet).map(ownerOf);
+    const [first] = owners;
+    return first && owners.every((owner) => owner && ownerKey(owner) === ownerKey(first))
+      ? first
+      : undefined;
+  };
   if (input.request) {
     const { integrationId, operations } = input.request;
     const resources = overview.resources.filter(
@@ -177,11 +193,9 @@ export async function loginWithToken(input: {
       throw Error(`Kingdom shows you no resources on integration ${integrationId} to ask for`);
     const requested = await requestSignet(url, keyFile, input.apiToken, {
       name,
-      integrationId,
       lifecycle: 'ongoing',
       expiresAt: null,
       maxRequests: null,
-      maxConcurrent: 1,
       resources: resources.map((resource) => ({
         resourceModel: 'IntegrationResource' as const,
         integrationResourceId: resource.id,
@@ -212,9 +226,12 @@ export async function loginWithToken(input: {
   } else {
     const held = new Set((await heldCredentials(directory)).map((item) => item.signetId));
     const candidates = enrollable.flatMap((signet): EnrollCandidate[] => {
-      const family = integrationFamily(overview, signet.integrationId);
-      return family && !held.has(signet.id)
-        ? [{ signetId: signet.id, name: signet.name, integrationId: signet.integrationId, family }]
+      const integrations = signetIntegrationIds(overview, signet).flatMap((integrationId) => {
+        const family = integrationFamily(overview, integrationId);
+        return family ? [{ integrationId, family }] : [];
+      });
+      return integrations.length && !held.has(signet.id)
+        ? [{ signetId: signet.id, name: signet.name, integrations }]
         : [];
     });
     if (!candidates.length) {
@@ -234,11 +251,10 @@ export async function loginWithToken(input: {
     directory,
     input.apiToken,
     chosen.map((signet) => {
-      const owner = ownerOf(signet.integrationId);
+      const owner = signetOwner(signet);
       return {
         signetId: signet.id,
         expectedRevision: signet.currentRevision,
-        integrationId: signet.integrationId,
         ...(owner ? { owner } : {}),
       };
     }),
@@ -328,8 +344,8 @@ export async function logout(home: string, url: string) {
 
 export type HeldStatus = {
   signetId: string;
-  integrationId: string | null;
-  provider: string | null;
+  /** The integrations its resources sit on, as Kingdom describes them now; empty when unread. */
+  integrations: { integrationId: string; provider: string }[];
   owner: OwnerRef | null;
   status: HolderView['status'];
   renewalExpiresAt: string;
@@ -353,8 +369,13 @@ export async function status(home: string, url: string, holders = new SignetHold
       );
       return {
         signetId: credential.signetId,
-        integrationId: view.description?.integrationId ?? credential.integrationId ?? null,
-        provider: view.description?.provider ?? null,
+        integrations: [
+          ...new Map(
+            (view.description?.operations ?? [])
+              .flatMap((operation) => operation.resources)
+              .map(({ integrationId, provider }) => [integrationId, { integrationId, provider }]),
+          ).values(),
+        ],
         owner: credential.owner ?? null,
         status: view.status,
         renewalExpiresAt: credential.renewalExpiresAt,
