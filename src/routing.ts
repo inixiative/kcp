@@ -252,6 +252,23 @@ export type Listener = {
   integrations: readonly { integrationId: string }[];
 };
 
+/** A held Signet Kingdom did not describe: it refused the Signet (`revoked`), or gave no answer. */
+export type UnreadSignet = { signetId: string; status: 'revoked' | 'unavailable' };
+
+/** A listening Signet with only the integration `-i` names; all of them without `-i`. */
+export const narrowToIntegration = <Held extends Listener>(
+  listener: Held,
+  integrationId: string | undefined,
+): Held =>
+  integrationId
+    ? {
+        ...listener,
+        integrations: listener.integrations.filter(
+          (integration) => integration.integrationId === integrationId,
+        ),
+      }
+    : listener;
+
 export type ListenRoute<Held extends Listener> =
   /** Every held Signet the selectors admit, each with the integrations they leave it. */
   { status: 'resolved'; listeners: Held[] } | { status: 'error'; reason: string };
@@ -262,24 +279,28 @@ export type ListenRoute<Held extends Listener> =
  * `-i`'s integration; else every Signet of the owner the flags name; with no selector, all of
  * them. `-i` narrows each Signet to that integration. Flags that contradict each other are
  * refused as `resolveRoute` refuses them. The repo's `.foundry/kcp.json` is not read: it maps a
- * CLI's provider family to an integration, and listening has no CLI.
+ * CLI's provider family to an integration, and listening has no CLI. `held` are the Signets
+ * Kingdom describes; `--signet` naming one of the `unread` says what Kingdom answered, since this
+ * machine does hold it.
  */
 export function resolveListeners<Held extends Listener>(input: {
   selection: Selection;
   held: readonly Held[];
+  unread?: readonly UnreadSignet[];
 }): ListenRoute<Held> {
   const { signetId, integrationId, owner } = input.selection;
-  const narrowed = (listener: Held): Held =>
-    integrationId
-      ? {
-          ...listener,
-          integrations: listener.integrations.filter(
-            (integration) => integration.integrationId === integrationId,
-          ),
-        }
-      : listener;
+  const narrowed = (listener: Held) => narrowToIntegration(listener, integrationId);
   if (signetId) {
     const named = input.held.find((listener) => listener.signetId === signetId);
+    const unread = input.unread?.find((signet) => signet.signetId === signetId);
+    if (!named && unread)
+      return {
+        status: 'error',
+        reason:
+          unread.status === 'revoked'
+            ? `Kingdom refused Signet ${signetId}: it is revoked, or this machine is no longer enrolled on it (kcp status)`
+            : `Kingdom did not describe Signet ${signetId}, which this machine holds; check the connection, then kcp status`,
+      };
     if (!named) return { status: 'error', reason: signetNotHeld(signetId) };
     const listener = narrowed(named);
     if (integrationId && !listener.integrations.length)

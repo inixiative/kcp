@@ -69,12 +69,15 @@ export async function pairedInstallation(home: string, url: string) {
 
 /**
  * Enrolls this key on every Signet Kingdom lists for the paired installation's integration (later
- * grants arrive this way). Does nothing for a KCP that isn't paired.
+ * grants arrive this way). Does nothing for a KCP that isn't paired. `signal` abandons the listing.
  */
-export async function holdGrantedSignets(home: string, url: string) {
+export async function holdGrantedSignets(home: string, url: string, signal?: AbortSignal) {
   if (!(await pairedInstallation(home, url))) return [];
   const { keyFile, directory } = await installationDirectory(home, url);
-  const { signets } = await installationSignets(url, keyFile, { timeoutMs: 10_000 });
+  const { signets } = await installationSignets(url, keyFile, {
+    timeoutMs: 10_000,
+    ...(signal ? { signal } : {}),
+  });
   return holdInstallationSignets(url, keyFile, directory, signets);
 }
 

@@ -41,7 +41,8 @@ export const usage = `KCP, the Kingdom CLI proxy
   first; --yes accepts them when nothing can ask.
   git runs locally through KCP's git credential helper, which isn't built yet.
   listen prints the integration events the held Signets grant, one line each on stdout (--json:
-  one JSON object each) and everything else on stderr, until interrupted. With no selector it
+  one JSON object each) and everything else on stderr, until interrupted or stdout closes. With
+  no selector it
   listens with every held Signet. --event keeps the channels holding that event leaf
   (events.Issue.create) or one under that prefix (events.Issue.*). Events are live only: nothing
   published while it wasn't listening is replayed.
@@ -73,6 +74,20 @@ function interruption() {
   for (const signal of ['SIGINT', 'SIGTERM'] as const)
     process.once(signal, () => controller.abort());
   return controller.signal;
+}
+
+/**
+ * Writes one line to a stream and fails when the write does: EPIPE once the reader has gone
+ * (`kcp listen --json | head -1`), which `console.log` swallows.
+ */
+export function lineWriter(stream: NodeJS.WritableStream) {
+  // The write's callback carries the failure to the caller; left unheard, the stream's own
+  // 'error' event would end the process as a crash.
+  stream.on('error', () => {});
+  return (line: string) =>
+    new Promise<void>((resolve, reject) => {
+      stream.write(`${line}\n`, (error) => (error ? reject(error) : resolve()));
+    });
 }
 
 /** The terminal: stdin's whole text, one answered line, and whether a person can answer. */
@@ -157,7 +172,7 @@ export async function main(
         selection,
         json: values.json ?? false,
         events: parseEventFilters(values.event ?? []),
-        out: (line) => console.log(line),
+        out: lineWriter(process.stdout),
         note: (line) => console.error(line),
         signal: interrupted ?? interruption(),
       });

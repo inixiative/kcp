@@ -3,6 +3,7 @@ import type { OwnerRef } from '@inixiative/signet/contracts';
 import {
   chooseSignet,
   type Listener,
+  narrowToIntegration,
   type Reachable,
   resolveListeners,
   resolveRoute,
@@ -323,6 +324,36 @@ describe('resolveListeners', () => {
       status: 'error',
       reason: `This machine holds no Signet ${id(99)}; kcp login --signet ${id(99)}`,
     });
+  });
+  test('--signet naming a Signet held here that Kingdom refused says Kingdom refused it', () => {
+    const unread = [
+      { signetId: id(20), status: 'revoked' as const },
+      { signetId: id(21), status: 'unavailable' as const },
+    ];
+    expect(resolveListeners({ selection: { signetId: id(20) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `Kingdom refused Signet ${id(20)}: it is revoked, or this machine is no longer enrolled on it (kcp status)`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(21) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `Kingdom did not describe Signet ${id(21)}, which this machine holds; check the connection, then kcp status`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(99) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `This machine holds no Signet ${id(99)}; kcp login --signet ${id(99)}`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(12) }, held, unread })).toEqual({
+      status: 'resolved',
+      listeners: [inixiativeBoth],
+    });
+  });
+  test('narrowToIntegration keeps the integration -i names, or everything without -i', () => {
+    expect(narrowToIntegration(inixiativeBoth, id(3))).toEqual({
+      ...inixiativeBoth,
+      integrations: [{ integrationId: id(3) }],
+    });
+    expect(narrowToIntegration(inixiativeBoth, id(1)).integrations).toEqual([]);
+    expect(narrowToIntegration(inixiativeBoth, undefined)).toBe(inixiativeBoth);
   });
   test('--signet with -i keeps only that integration; one it has no channel on is an error', () => {
     expect(listeners({ signetId: id(12), integrationId: id(3) })).toEqual({
