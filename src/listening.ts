@@ -33,16 +33,25 @@ export type ListenChannel = {
  * that reorder a line.
  */
 const unprintable = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/gu;
+/**
+ * What prints as nothing, or as a blank, and so hides text or makes two names look alike. Unicode
+ * lists it as `Default_Ignorable_Code_Point`: the soft hyphen, the Mongolian vowel separator,
+ * zero-width spaces and joiners, the word joiner and invisible operators, the deprecated format
+ * characters, the byte order mark, the Hangul fillers, variation selectors and tag characters.
+ * The braille blank (U+2800) is not on that list and looks the same.
+ */
+const invisible = /[\p{Default_Ignorable_Code_Point}\u2800]/gu;
 /** A run of white space, the line breaks among it (NEL, U+0085, is one `\s` leaves out). */
 const whiteSpace = /[\s\u0085]+/g;
 
 /**
  * Provider text (an issue title, a resource name, an event type) as `kcp listen` prints it for a
- * person: a run of white space, line breaks included, is one space, and every other control or
- * bidi character is gone. What is left can't start a line, move the cursor or reorder the line.
+ * person: what prints as nothing is gone, a run of white space, line breaks included, is one
+ * space, and every other control or bidi character is gone. What is left can't start a line, move
+ * the cursor, reorder the line or hide in it.
  */
 export const terminalSafe = (text: string) =>
-  text.replace(whiteSpace, ' ').replace(unprintable, '');
+  text.replace(invisible, '').replace(whiteSpace, ' ').replace(unprintable, '');
 
 /**
  * One value as one NDJSON line. `JSON.stringify` escapes the C0 controls; the rest of what
@@ -139,45 +148,50 @@ export const eventLine = (
   event: append.event,
 });
 
-const excerptLength = 120;
+const fieldLength = 120;
+/** Provider text as one bounded field of a line: `terminalSafe`, trimmed, cut on a whole character. */
 const oneLine = (text: string) => {
-  const line = terminalSafe(text).trim();
-  return line.length > excerptLength ? `${line.slice(0, excerptLength)}…` : line;
+  const characters = Array.from(terminalSafe(text).trim());
+  return characters.length > fieldLength
+    ? `${characters.slice(0, fieldLength).join('')}…`
+    : characters.join('');
 };
+/** A field every line has: a dash when nothing of it is left, so the fields after it stay in place. */
+const field = (text: string | null) => oneLine(text ?? '') || '-';
 
 /** The text an event shows: its subject's title, else its excerpt. A lens may have trimmed both. */
 function eventText(event: Record<string, unknown>) {
   const subject = event.subject;
   const title =
     typeof subject === 'object' && subject !== null && 'title' in subject ? subject.title : null;
-  if (typeof title === 'string' && title.trim()) return oneLine(title);
-  return typeof event.excerpt === 'string' ? oneLine(event.excerpt) : '';
+  return (
+    (typeof title === 'string' && oneLine(title)) ||
+    (typeof event.excerpt === 'string' ? oneLine(event.excerpt) : '')
+  );
 }
 
 /**
  * One event as a line a person reads: when it happened (when it arrived, if the event doesn't
  * say), the provider, the resource, the event type, and its title or excerpt when it has one.
- * Every field a provider wrote is printed `terminalSafe`.
+ * Every field a provider wrote is printed `terminalSafe` and cut at 120 characters; the provider,
+ * the resource and the type are always there, a dash when empty.
  */
 export function formatEvent(line: EventLine, { received }: { received: Date }) {
   const at = typeof line.event.at === 'string' ? new Date(line.event.at) : received;
   const time = Number.isNaN(at.getTime()) ? received : at;
+  const text = eventText(line.event);
   return [
     `${time.toISOString().slice(0, 19)}Z`,
-    terminalSafe(line.provider ?? '-'),
-    terminalSafe(line.resourceName),
-    terminalSafe(line.type),
-    eventText(line.event),
-  ]
-    .filter(Boolean)
-    .join('  ');
+    field(line.provider),
+    field(line.resourceName),
+    field(line.type),
+    ...(text ? [text] : []),
+  ].join('  ');
 }
 
-/** A channel as the notes on stderr name it, `terminalSafe`: one line whatever the resource is called. */
+/** A channel as the notes on stderr name it: one line whatever the resource is called, each name bounded. */
 export const channelLabel = (channel: Omit<ListenChannel, 'events'>) =>
-  terminalSafe(
-    `${channel.provider ?? '-'} ${channel.resourceName} (${channel.resourceKind} ${channel.resourceId}, Signet ${channel.signetId})`,
-  );
+  `${field(channel.provider)} ${field(channel.resourceName)} (${field(channel.resourceKind)} ${channel.resourceId}, Signet ${channel.signetId})`;
 
 /** Why there is nothing to listen on: no channel at all, or none the `--event` filters admit. */
 export function noChannelReason(
@@ -260,19 +274,30 @@ const elapsed = (ms: number) =>
 /**
  * The note for a channel still not listening: which one, for how long, and what it waits for.
  * Its Signet's socket is not connected (never was, or dropped), Kingdom refused the Signet's last
- * `refusals` presentations, or Kingdom accepted the Signet and has not answered the open.
+ * `refusals` presentations, Kingdom closed the channel for a reason it reopens after (`closed`), or
+ * Kingdom accepted the Signet and has not answered the open.
  */
 export const stallNote = (
   channel: ListenChannel,
-  stall: { waitedMs: number; connected: boolean; refusals: number },
+  stall: { waitedMs: number; connected: boolean; refusals: number; closed?: string | null },
 ) =>
   `Still not listening on ${channelLabel(channel)} after ${elapsed(stall.waitedMs)}: ${
     stall.connected
-      ? 'Kingdom accepted the Signet and has not opened the channel'
+      ? stall.closed
+        ? `Kingdom closed it (${stall.closed}) and has not opened it again`
+        : 'Kingdom accepted the Signet and has not opened the channel'
       : stall.refusals
         ? `Kingdom refused the Signet's presentation${stall.refusals > 1 ? `, ${stall.refusals} times running` : ''}`
         : 'no connection to Kingdom yet'
   }`;
+
+/**
+ * The closes Kingdom sends that `@inixiative/signet` reopens after, so the channel has not ended:
+ * a revision, a lapsed presentation, an offline host. Every other close ends the channel.
+ */
+const reopenedAfter = new Set<string>(['revised', 'presentationExpired', 'hostOffline']);
+export const closeIsReopened = (reason: string | null) =>
+  reason !== null && reopenedAfter.has(reason);
 
 /** What `SignetSocket` (`@inixiative/signet`) reports when Kingdom answers a presentation `signetRejected`. */
 const socketRefusal = 'Kingdom refused this Signet presentation';
@@ -313,11 +338,27 @@ export const refusedForGood = (signet: SignetHearing, limit: number) =>
 export const nothingLeftToHear = (signets: readonly SignetHearing[], limit: number) =>
   signets.every((signet) => signet.channels === 0 || refusedForGood(signet, limit));
 
+/** What a write fails with once the reader of stdout has gone, or the stream was closed under it. */
+const readerGone = new Set<unknown>([
+  'EPIPE',
+  'ERR_STREAM_DESTROYED',
+  'ERR_STREAM_WRITE_AFTER_END',
+  'ERR_STREAM_PREMATURE_CLOSE',
+]);
+
 /**
- * What stderr says when an event could not be written to stdout: nothing when the reader left
- * (EPIPE, as after `| head -1`), else the failure. Either way `listen` stops: nobody is reading.
+ * How a failed write to stdout ends `listen`. A reader that went away (EPIPE, as after
+ * `| head -1`, or a closed stream) is a clean end with nothing to say; any other failure (a full
+ * disk, an I/O error) is an error, with the reason for stderr.
  */
-export const stdoutFailure = (error: unknown) =>
-  (error as { code?: unknown } | null)?.code === 'EPIPE'
-    ? null
-    : `Stopped: stdout could not be written (${error instanceof Error ? error.message : String(error)})`;
+export const stdoutFailure = (error: unknown): { code: 0 | 1; note: string | null } =>
+  readerGone.has((error as { code?: unknown } | null)?.code)
+    ? { code: 0, note: null }
+    : {
+        code: 1,
+        note: `Stopped: stdout could not be written (${error instanceof Error ? error.message : String(error)})`,
+      };
+
+/** The note for events dropped while `waiting` written ones had still not been taken by stdout. */
+export const droppedNote = (dropped: number, waiting: number) =>
+  `Dropped ${dropped} event${dropped === 1 ? '' : 's'}: stdout was not being read, and ${waiting} written event${waiting === 1 ? ' was' : 's were'} still waiting for it; events are live only`;

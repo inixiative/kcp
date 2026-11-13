@@ -41,11 +41,11 @@ export const usage = `KCP, the Kingdom CLI proxy
   first; --yes accepts them when nothing can ask.
   git runs locally through KCP's git credential helper, which isn't built yet.
   listen prints the integration events the held Signets grant, one line each on stdout (--json:
-  one JSON object each) and everything else on stderr, until interrupted or stdout closes. With
-  no selector it
-  listens with every held Signet. --event keeps the channels holding that event leaf
-  (events.Issue.create) or one under that prefix (events.Issue.*). Events are live only: nothing
-  published while it wasn't listening is replayed.
+  one JSON object each) and everything else on stderr, until interrupted or the reader of stdout
+  has gone. With no selector it listens with every held Signet. --event keeps the channels
+  holding that event leaf (events.Issue.create) or one under that prefix (events.Issue.*). Events
+  are live only: nothing published while it wasn't listening is replayed, and events are dropped
+  while stdout is not being read.
   The Kingdom is --url, else KINGDOM_URL, else the last login, else hosted production.
   Keys and Signets live in KCP_HOME (default ~/.kcp).`;
 
@@ -66,6 +66,7 @@ const sessionOptions = {
 const listenOptions = {
   json: { type: 'boolean' },
   event: { type: 'string', multiple: true },
+  help: { type: 'boolean', short: 'h' },
 } as const;
 
 /** Aborts on SIGINT or SIGTERM, so `listen` closes its sockets and the process exits 0. */
@@ -77,8 +78,9 @@ function interruption() {
 }
 
 /**
- * Writes one line to a stream and fails when the write does: EPIPE once the reader has gone
- * (`kcp listen --json | head -1`), which `console.log` swallows.
+ * Writes one line to a stream, settling once the stream has taken it and failing when the write
+ * does: EPIPE once the reader has gone (`kcp listen --json | head -1`), which `console.log`
+ * swallows. A reader that stops reading leaves it pending.
  */
 export function lineWriter(stream: NodeJS.WritableStream) {
   // The write's callback carries the failure to the caller; left unheard, the stream's own
@@ -166,6 +168,10 @@ export async function main(
     const { selection, rest } = parseSelectors(argv);
     if (rest[0] === 'listen') {
       const { values } = parseArgs({ args: rest.slice(1), options: listenOptions, strict: true });
+      if (values.help) {
+        console.log(usage);
+        return 0;
+      }
       return listen({
         home,
         url,
@@ -273,18 +279,26 @@ export async function main(
 
 const operatorErrors = [SelectorError, RouteError, NoOperationsError];
 
+/**
+ * What stderr says when a command fails: the error's own words when it was written for the
+ * operator (a refusal thrown here, or `parseArgs` naming the argument it does not take), else only
+ * where to look, since anything else may carry what should not be printed.
+ */
+export const failureMessage = (error: unknown) =>
+  error instanceof Error &&
+  (error.name === 'Error' ||
+    operatorErrors.some((type) => error instanceof type) ||
+    String((error as { code?: unknown }).code).startsWith('ERR_PARSE_ARGS'))
+    ? error.message
+    : 'kcp failed; check the Kingdom address and KCP_HOME';
+
 if (import.meta.main)
   main(Bun.argv.slice(2)).then(
-    (code) => {
-      process.exitCode = code;
-    },
+    // Exits, where setting the exit code would wait: a line stdout never takes (`kcp listen`
+    // into a reader that stopped reading) would keep the process alive after the command ended.
+    (code) => process.exit(code),
     (error: unknown) => {
-      const message =
-        error instanceof Error &&
-        (error.name === 'Error' || operatorErrors.some((type) => error instanceof type))
-          ? error.message
-          : 'kcp failed; check the Kingdom address and KCP_HOME';
-      console.error(redactSecrets(message));
-      process.exitCode = 1;
+      console.error(redactSecrets(failureMessage(error)));
+      process.exit(1);
     },
   );

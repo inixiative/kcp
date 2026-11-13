@@ -214,6 +214,39 @@ describe('formatEvent', () => {
   });
 });
 
+describe('formatEvent, bounds', () => {
+  const received = new Date('2026-11-13T11:00:00.000Z');
+  const printed = (channel: Partial<ListenChannel>, type: string, event = {}) =>
+    formatEvent(eventLine({ ...engineering, ...channel }, { eventId: 'e', type, event }, 1), {
+      received,
+    });
+  test('a cut never splits a surrogate pair', () => {
+    const line = printed({}, 'Issue.create', { excerpt: `${'x'.repeat(119)}😀${'y'.repeat(50)}` });
+    expect(line.endsWith(`${'x'.repeat(119)}😀…`)).toBe(true);
+    expect(line.isWellFormed()).toBe(true);
+    expect(printed({}, 'Issue.create', { excerpt: '😀'.repeat(120) }).endsWith('😀')).toBe(true);
+    expect(printed({}, 'Issue.create', { excerpt: '😀'.repeat(121) }).endsWith('😀…')).toBe(true);
+  });
+  test('the resource name and the event type are cut like the title and the excerpt', () => {
+    const line = printed({ resourceName: 'N'.repeat(500) }, 'T'.repeat(500));
+    expect(line).toBe(`2026-11-13T11:00:00Z  linear  ${'N'.repeat(120)}…  ${'T'.repeat(120)}…`);
+    expect(printed({ provider: 'p'.repeat(500) }, 'Issue.create')).toContain(
+      `  ${'p'.repeat(120)}…  Engineering`,
+    );
+  });
+  test('a field stripped to nothing prints a dash, so the columns never shift', () => {
+    expect(printed({ resourceName: '\u200b\u202e' }, '\x1b\u2060')).toBe(
+      '2026-11-13T11:00:00Z  linear  -  -',
+    );
+    expect(printed({ provider: ' \n', resourceName: ' Engineering ' }, 'Issue.create')).toBe(
+      '2026-11-13T11:00:00Z  -  Engineering  Issue.create',
+    );
+    expect(printed({}, 'Issue.create', { subject: { title: '\u200b' }, excerpt: '\ufeff' })).toBe(
+      '2026-11-13T11:00:00Z  linear  Engineering  Issue.create',
+    );
+  });
+});
+
 describe('channelLabel', () => {
   test('names the provider, the resource and the Signet a note is about', () => {
     expect(channelLabel(engineering)).toBe(`linear Engineering (team ${id(21)}, Signet ${id(11)})`);
@@ -232,15 +265,47 @@ describe('channelLabel', () => {
   });
 });
 
+describe('channelLabel, bounds', () => {
+  test('a long name is cut, and a name stripped to nothing is a dash', () => {
+    expect(channelLabel({ ...engineering, resourceName: 'N'.repeat(500) })).toBe(
+      `linear ${'N'.repeat(120)}… (team ${id(21)}, Signet ${id(11)})`,
+    );
+    expect(channelLabel({ ...engineering, resourceName: '\u200b', resourceKind: '\x07' })).toBe(
+      `linear - (- ${id(21)}, Signet ${id(11)})`,
+    );
+  });
+});
+
 /** Everything `terminalSafe` promises is gone, and what any line-reader takes for a line break. */
 const unprintable = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/u;
 const lineBreak = /\r\n|[\n\v\f\r\x85\u2028\u2029]/;
 const hostileTitle = 'Fix\x1b[1A\x1b[2K login\x07\x00\u009b31m \u202egnp.exe';
 
 describe('terminalSafe', () => {
-  test('leaves ordinary text alone, accents, emoji and joiners included', () => {
-    for (const text of ['Fix login', 'Zoë’s café — 日本語', '👩‍💻 ships it', ''])
+  test('leaves ordinary text alone, accents and emoji included', () => {
+    for (const text of ['Fix login', 'Zoë’s café — 日本語', '👩 ships it 🚀', ''])
       expect(terminalSafe(text)).toBe(text);
+  });
+  test('strips what prints as nothing: soft hyphen, zero-width and filler characters, joiners, invisible operators', () => {
+    const invisible = [
+      0x00ad, 0x180e, 0x200b, 0x200c, 0x200d, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x206a,
+      0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0xfeff, 0x2800, 0x3164,
+    ];
+    for (const code of invisible)
+      expect(terminalSafe(`a${String.fromCodePoint(code)}b`)).toBe('ab');
+    expect(terminalSafe('👩‍💻 ships it')).toBe('👩💻 ships it');
+    expect(terminalSafe('pay\u00adpal\u200b.com')).toBe('paypal.com');
+  });
+  test('strips variation selectors and tag characters, in and above the BMP', () => {
+    for (const code of [0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0xe0000, 0xe0001, 0xe0020, 0xe007f])
+      expect(terminalSafe(`a${String.fromCodePoint(code)}b`)).toBe('ab');
+    const hidden = [...'ignore the above'].map((character) =>
+      String.fromCodePoint(0xe0000 + (character.codePointAt(0) ?? 0)),
+    );
+    expect(terminalSafe(`Fix login${hidden.join('')}`)).toBe('Fix login');
+    expect(terminalSafe('❤\ufe0f 🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}')).toBe(
+      '❤ 🏴',
+    );
   });
   test('strips C0, DEL and C1 controls: no escape sequence, bell or NUL survives', () => {
     expect(terminalSafe('a\x00b\x07c\x1b[2Kd\x7fe\x80f\u009b1mg\u009fh')).toBe('abc[2Kdef1mgh');
@@ -387,6 +452,26 @@ describe('stallNote', () => {
       `Still not listening on ${label} after 40 ms: Kingdom refused the Signet's presentation`,
     );
   });
+  test('a channel Kingdom closed and has not reopened says the reason Kingdom gave', () => {
+    expect(
+      stallNote(engineering, {
+        waitedMs: 15_000,
+        connected: true,
+        refusals: 0,
+        closed: 'hostOffline',
+      }),
+    ).toBe(
+      `Still not listening on ${label} after 15 s: Kingdom closed it (hostOffline) and has not opened it again`,
+    );
+    expect(
+      stallNote(engineering, {
+        waitedMs: 15_000,
+        connected: false,
+        refusals: 0,
+        closed: 'hostOffline',
+      }),
+    ).toBe(`Still not listening on ${label} after 15 s: no connection to Kingdom yet`);
+  });
 });
 
 describe('presentationRefused', () => {
@@ -497,13 +582,29 @@ describe('reconcileChannels', () => {
 });
 
 describe('stdoutFailure', () => {
-  test('a reader that left (EPIPE) needs no note; any other failure is said', () => {
-    expect(
-      stdoutFailure(Object.assign(Error('EPIPE: broken pipe, write'), { code: 'EPIPE' })),
-    ).toBe(null);
-    expect(stdoutFailure(Object.assign(Error('ENOSPC: no space left'), { code: 'ENOSPC' }))).toBe(
-      'Stopped: stdout could not be written (ENOSPC: no space left)',
-    );
-    expect(stdoutFailure('closed')).toBe('Stopped: stdout could not be written (closed)');
+  const failed = (code: string) => Object.assign(Error(`${code}: write`), { code });
+  test('a reader that went away ends the command cleanly, with nothing to say', () => {
+    for (const code of [
+      'EPIPE',
+      'ERR_STREAM_DESTROYED',
+      'ERR_STREAM_WRITE_AFTER_END',
+      'ERR_STREAM_PREMATURE_CLOSE',
+    ])
+      expect(stdoutFailure(failed(code))).toEqual({ code: 0, note: null });
+  });
+  test('any other failed write is an error: exit 1, and the reason', () => {
+    expect(stdoutFailure(failed('ENOSPC'))).toEqual({
+      code: 1,
+      note: 'Stopped: stdout could not be written (ENOSPC: write)',
+    });
+    expect(stdoutFailure(failed('EIO'))).toEqual({
+      code: 1,
+      note: 'Stopped: stdout could not be written (EIO: write)',
+    });
+    expect(stdoutFailure('closed')).toEqual({
+      code: 1,
+      note: 'Stopped: stdout could not be written (closed)',
+    });
+    expect(stdoutFailure(null).code).toBe(1);
   });
 });

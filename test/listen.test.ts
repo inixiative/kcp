@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { closeSync, constants, openSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installationPaths, writePrivateJson } from '@inixiative/signet';
+import { installationPaths, SignetHolders, writePrivateJson } from '@inixiative/signet';
 import { accessEventsStreamName, type EventChannelMap } from '@inixiative/signet/contracts';
 import type { ServerWebSocket } from 'bun';
-import { main, usage } from '../src/cli';
+import { failureMessage, main, usage } from '../src/cli';
 import { heldListeners, listen } from '../src/listen';
 import {
   credentials,
@@ -268,6 +269,22 @@ const exitOf = (done: Promise<number>) => {
   });
   return exit;
 };
+/** What `done` resolved to, or `'still running'` once `ms` have passed: a hang fails fast, by name. */
+const within = (done: Promise<number>, ms = 1500) =>
+  Promise.race([done, Bun.sleep(ms).then(() => 'still running' as const)]);
+/** A stdout nobody reads: every write is taken and never finishes. */
+const nobodyReads = () => {
+  const written: string[] = [];
+  return {
+    written,
+    out: (line: string) => {
+      written.push(line);
+      return new Promise<void>(() => {});
+    },
+  };
+};
+const writeError = (code: string, message: string) =>
+  Object.assign(Error(`${code}: ${message}`), { code });
 const describedTimes = (signetId: string) => describes.filter((id) => id === signetId).length;
 /** Kingdom revises a Signet: it describes it anew, and closes each open channel as `revised`. */
 const revise = (signetId: string, eventChannels: EventChannelMap, ...open: string[]) => {
@@ -399,7 +416,7 @@ describe('kcp listen', () => {
       type: 'message.channels',
       event: {},
     });
-    expect(await done).toBe(0);
+    expect(await done).toBe(1);
     expect(notes.at(-1)).toBe(
       'Stopped: stdout could not be written (stdout closed while holding kingdom_REDACTED)',
     );
@@ -538,7 +555,89 @@ describe('kcp listen', () => {
     expect(exit.code).toBeNull();
   });
 
-  test('after an interrupt nothing more is printed, even an event that had already arrived', async () => {
+  test('a write that fails for another reason (a full disk) ends the command with exit 1, and says why', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { notes, done } = start(home, {
+      out: async () => {
+        throw writeError('ENOSPC', 'no space left on device, write');
+      },
+    });
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    appended(slackSignet, general, seeded + 1, {
+      eventId: 'message-1',
+      type: 'message.channels',
+      event: {},
+    });
+    expect(await within(done)).toBe(1);
+    expect(notes.at(-1)).toBe(
+      'Stopped: stdout could not be written (ENOSPC: no space left on device, write)',
+    );
+    await waitFor(() => presenters.size === 0);
+  });
+
+  test('a stdout that was closed or destroyed is a reader that went away: exit 0, nothing said', async () => {
+    for (const code of ['ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END']) {
+      const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+      const { notes, done } = start(home, {
+        out: () => {
+          throw writeError(code, 'the stream is gone');
+        },
+      });
+      await waitFor(() => sent('open', slackSignet, general) === 1);
+      opened(slackSignet, general);
+      appended(slackSignet, general, seeded + 1, {
+        eventId: 'message-1',
+        type: 'message.channels',
+        event: {},
+      });
+      expect(await within(done)).toBe(0);
+      expect(notes.some((note) => /stdout|stream/.test(note))).toBe(false);
+      await waitFor(() => presenters.size === 0);
+      frames.length = 0;
+    }
+  });
+
+  test('a stdout nobody reads does not stop the command hearing Kingdom: a revoked channel still ends it, exit 1', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { written, out } = nobodyReads();
+    const { notes, done } = start(home, { out });
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    for (const seq of [1, 2, 3])
+      appended(slackSignet, general, seeded + seq, {
+        eventId: `message-${seq}`,
+        type: 'message.channels',
+        event: {},
+      });
+    await waitFor(() => written.length === 3);
+    closedBy(slackSignet, general, 'revoked');
+    expect(await within(done)).toBe(1);
+    expect(notes.at(-1)).toMatch(/Every channel ended/);
+    await waitFor(() => presenters.size === 0);
+  });
+
+  test('events beyond the cap of writes stdout has not taken are dropped, and one note says how many', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { written, out } = nobodyReads();
+    const { notes, done } = start(home, { out, maxUnflushed: 2 });
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    for (const seq of [1, 2, 3, 4, 5])
+      appended(slackSignet, general, seeded + seq, {
+        eventId: `message-${seq}`,
+        type: 'message.channels',
+        event: {},
+      });
+    closedBy(slackSignet, general, 'revoked');
+    expect(await within(done)).toBe(1);
+    expect(written.map((line) => JSON.parse(line).eventId)).toEqual(['message-1', 'message-2']);
+    expect(notes.filter((note) => note.startsWith('Dropped'))).toEqual([
+      'Dropped 3 events: stdout was not being read, and 2 written events were still waiting for it; events are live only',
+    ]);
+  });
+
+  test('an interrupt returns at once while stdout takes no write, and nothing is printed after it', async () => {
     const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
     const written: string[] = [];
     const writing = Promise.withResolvers<void>();
@@ -551,20 +650,16 @@ describe('kcp listen', () => {
     await waitFor(() => sent('open', linearSignet, engineering) === 1);
     opened(linearSignet, engineering);
     appended(linearSignet, engineering, seeded + 1, issue('delivery-1', 'Being written'));
-    appended(
-      linearSignet,
-      engineering,
-      seeded + 2,
-      issue('delivery-2', 'Arrived, not yet written'),
-    );
-    await waitFor(() => written.length === 1);
-    await settle();
+    appended(linearSignet, engineering, seeded + 2, issue('delivery-2', 'Written behind it'));
+    await waitFor(() => written.length === 2);
+    const began = Date.now();
     stop.abort();
-    expect(await done).toBe(0);
+    expect(await within(done)).toBe(0);
+    expect(Date.now() - began).toBeLessThan(500);
     const noted = notes.length;
     writing.resolve();
     await settle();
-    expect(written).toHaveLength(1);
+    expect(written).toHaveLength(2);
     expect(notes).toHaveLength(noted);
   });
 
@@ -612,13 +707,54 @@ describe('kcp listen', () => {
     opened(slackSignet, general);
     await waitFor(() => notes.some((note) => note.startsWith('Listening on slack general')));
     refuseUpgrades = true;
+    const beforeTheDrop = notes.length;
     presenters.get(slackSignet)?.close();
-    await waitFor(() => notes.some((note) => note.startsWith('Still not listening')));
-    expect(notes.at(-1)).toMatch(
+    const stalls = () =>
+      notes.slice(beforeTheDrop).filter((note) => note.startsWith('Still not listening'));
+    await waitFor(() => stalls().length > 0);
+    expect(stalls()[0]).toMatch(
       /^Still not listening on slack general .* after \d+ ms: no connection to Kingdom yet$/,
     );
     refuseUpgrades = false;
     await waitFor(() => sent('open', slackSignet, general) === 2);
+    opened(slackSignet, general);
+    await waitFor(() => notes.some((note) => note.startsWith('Listening again on slack general')));
+  });
+
+  test('a reconnect whose reopen Kingdom never answers is noted after the wait', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { notes } = start(home, { stallMs: 300 });
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    await waitFor(() => notes.some((note) => note.startsWith('Listening on slack general')));
+    const beforeTheDrop = notes.length;
+    presenters.get(slackSignet)?.close();
+    await waitFor(() => sent('open', slackSignet, general) === 2);
+    const stalls = () =>
+      notes.slice(beforeTheDrop).filter((note) => note.startsWith('Still not listening'));
+    await waitFor(() => stalls().length > 0);
+    expect(stalls()[0]).toMatch(
+      /^Still not listening on slack general .* after \d+ ms: Kingdom accepted the Signet and has not opened the channel$/,
+    );
+    expect(Number(/after (\d+) ms/.exec(stalls()[0] ?? '')?.[1])).toBeGreaterThanOrEqual(300);
+  });
+
+  test('a channel Kingdom closes because its host is offline is noted while it stays closed', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { notes, done } = start(home, { stallMs: 100 });
+    const exit = exitOf(done);
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    await waitFor(() => notes.some((note) => note.startsWith('Listening on slack general')));
+    closedBy(slackSignet, general, 'hostOffline');
+    const stalls = () => notes.filter((note) => note.startsWith('Still not listening'));
+    await waitFor(() => stalls().length > 0);
+    expect(stalls()[0]).toMatch(
+      /^Still not listening on slack general .* after \d+ ms: Kingdom closed it \(hostOffline\) and has not opened it again$/,
+    );
+    expect(notes.some((note) => note.startsWith('Stopped listening'))).toBe(false);
+    expect(exit.code).toBeNull();
+    await waitFor(() => sent('open', slackSignet, general) >= 2);
     opened(slackSignet, general);
     await waitFor(() => notes.some((note) => note.startsWith('Listening again on slack general')));
   });
@@ -837,6 +973,53 @@ describe('kcp listen', () => {
     await waitFor(() => sent('open', linearSignet, engineering) === 2);
     opened(linearSignet, engineering);
     await waitFor(() => sent('open', linearSignet, design) === 1);
+  });
+
+  test('ending abandons a describe still in flight', async () => {
+    const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+    const { notes, done } = start(home);
+    await waitFor(() => sent('open', slackSignet, general) === 1);
+    opened(slackSignet, general);
+    await waitFor(() => notes.some((note) => note.startsWith('Listening on slack general')));
+    withheld = Promise.withResolvers<void>();
+    closedBy(slackSignet, general, 'revised');
+    await waitFor(() => sent('open', slackSignet, general) === 2);
+    opened(slackSignet, general);
+    await waitFor(() => describedTimes(slackSignet) === 2);
+    closedBy(slackSignet, general, 'revoked');
+    expect(await within(done)).toBe(1);
+    await waitFor(() => abandoned === 1, 1000);
+  });
+
+  test('a describe that rejects is one note and never an unhandled rejection; the next one still runs', async () => {
+    let failing = false;
+    class Failing extends SignetHolders {
+      override get(...read: Parameters<SignetHolders['get']>) {
+        return failing ? Promise.reject(Error('describe blew up')) : super.get(...read);
+      }
+    }
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => void unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const home = await kcpHome({ signetId: slackSignet, eventChannels: slackChannels });
+      const { notes } = start(home, { holders: new Failing() });
+      await waitFor(() => sent('open', slackSignet, general) === 1);
+      opened(slackSignet, general);
+      await waitFor(() => notes.some((note) => note.startsWith('Listening on slack general')));
+      const undescribed = () => notes.filter((note) => note.includes('did not describe it')).length;
+      failing = true;
+      for (const reopen of [2, 3]) {
+        closedBy(slackSignet, general, 'revised');
+        await waitFor(() => sent('open', slackSignet, general) === reopen);
+        opened(slackSignet, general);
+        await waitFor(() => undescribed() === reopen - 1);
+      }
+      await settle();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
   });
 
   test('an interrupt while Kingdom is still describing the Signets exits 0 at once and abandons the read', async () => {
@@ -1076,14 +1259,11 @@ describe('kcp [selectors] listen', () => {
     expect(await done).toBe(0);
   });
 
-  test('refuses a filter that is no event leaf, and flags it does not know, before any call', async () => {
+  test('refuses a filter that is no event leaf before any call', async () => {
     const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
     described.clear();
     await expect(main(['listen', '--event', 'Issue.create'], env(home))).rejects.toThrow(
       /--event takes an event leaf/,
-    );
-    await expect(main(['listen', '--bogus'], env(home))).rejects.toThrow(
-      "Unknown option '--bogus'",
     );
     for (const filter of ['events.Issue.', 'events..create'])
       await expect(main(['listen', '--event', filter], env(home))).rejects.toThrow(
@@ -1093,11 +1273,127 @@ describe('kcp [selectors] listen', () => {
     expect(upgrades).toBe(0);
   });
 
-  const kcpProcess = (home: string) =>
+  test('an argument it does not take is refused by name, before any call', async () => {
+    const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
+    described.clear();
+    const refusal = async (...argv: string[]) =>
+      failureMessage(
+        await main(argv, env(home)).then(
+          () => Error('it did not refuse'),
+          (error: unknown) => error,
+        ),
+      );
+    expect(await refusal('listen', '--bogus')).toBe("Unknown option '--bogus'");
+    expect(await refusal('listen', 'extra')).toBe(
+      "Unexpected argument 'extra'. This command does not take positional arguments",
+    );
+    expect(await refusal('listen', '--event')).toBe("Option '--event <value>' argument missing");
+    expect(await refusal('status', '--bogus')).toBe("Unknown option '--bogus'");
+    expect(await refusal('login', '--bogus')).toBe("Unknown option '--bogus'");
+    expect(upgrades).toBe(0);
+    expect(describes).toEqual([]);
+  });
+
+  test('what is not an operator error still says only where to look', () => {
+    expect(failureMessage(new TypeError('fetch failed'))).toBe(
+      'kcp failed; check the Kingdom address and KCP_HOME',
+    );
+    expect(failureMessage('boom')).toBe('kcp failed; check the Kingdom address and KCP_HOME');
+    expect(failureMessage(Error('No token on stdin'))).toBe('No token on stdin');
+  });
+
+  test('listen --help prints the usage and exits 0, before any call', async () => {
+    const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
+    spies = quiet();
+    for (const spy of spies) spy.mockImplementation(() => {});
+    for (const flag of ['--help', '-h']) expect(await main(['listen', flag], env(home))).toBe(0);
+    expect(said(spies[0])).toEqual([usage, usage]);
+    expect(said(spies[1])).toEqual([]);
+    expect(describes).toEqual([]);
+    expect(upgrades).toBe(0);
+  });
+
+  test('the usage text has no stray line break and fits 100 columns', () => {
+    expect(usage).not.toContain('selector it\n');
+    expect(usage.replace(/\s+/g, ' ')).toContain(
+      'With no selector it listens with every held Signet.',
+    );
+    for (const line of usage.split('\n')) expect(line.length).toBeLessThanOrEqual(100);
+  });
+
+  const kcpProcess = (home: string, ...argv: string[]) =>
     Bun.spawn(
-      [process.execPath, join(import.meta.dir, '..', 'src', 'cli.ts'), 'listen', '--json'],
+      [
+        process.execPath,
+        join(import.meta.dir, '..', 'src', 'cli.ts'),
+        ...(argv.length ? argv : ['listen', '--json']),
+      ],
       { env: { ...process.env, ...env(home) }, stdout: 'pipe', stderr: 'pipe' },
     );
+  /** The exit code, or `'still alive'` once `ms` have passed. */
+  const exitWithin = (kcp: { exited: Promise<number> }, ms: number) =>
+    Promise.race([kcp.exited, Bun.sleep(ms).then(() => 'still alive' as const)]);
+
+  test('as a process: a flag it does not know is named on stderr, exit 1', async () => {
+    const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
+    const kcp = kcpProcess(home, 'listen', '--bogus');
+    try {
+      expect(await kcp.exited).toBe(1);
+      expect(await new Response(kcp.stderr).text()).toBe("Unknown option '--bogus'\n");
+      expect(await new Response(kcp.stdout).text()).toBe('');
+      expect(upgrades).toBe(0);
+    } finally {
+      kcp.kill();
+    }
+  }, 20_000);
+
+  test('as a process: with a stdout nobody reads, SIGTERM still ends it promptly, and so does every channel revoked', async () => {
+    const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
+    // A pipe held open and never read: the kernel takes 64 KiB, then every write waits.
+    const fifo = join(home, 'stdout.fifo');
+    expect(Bun.spawnSync(['mkfifo', fifo]).exitCode).toBe(0);
+    const neverRead = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      for (const ending of ['SIGTERM', 'revoked'] as const) {
+        const kcp = Bun.spawn(
+          [
+            'sh',
+            '-c',
+            'exec "$0" "$1" listen --json > "$2"',
+            process.execPath,
+            join(import.meta.dir, '..', 'src', 'cli.ts'),
+            fifo,
+          ],
+          { env: { ...process.env, ...env(home) }, stdout: 'ignore', stderr: 'pipe' },
+        );
+        try {
+          await waitFor(() => sent('open', linearSignet, engineering) === 1, 10_000);
+          opened(linearSignet, engineering);
+          opened(linearSignet, design);
+          for (let seq = 1; seq <= 2000; seq++)
+            appended(
+              linearSignet,
+              engineering,
+              seeded + seq,
+              issue(`delivery-${seq}`, 'x'.repeat(900)),
+            );
+          await Bun.sleep(300);
+          if (ending === 'SIGTERM') kcp.kill('SIGTERM');
+          else
+            for (const resource of [engineering, design]) closedBy(linearSignet, resource, ending);
+          expect(await exitWithin(kcp, 3000)).toBe(ending === 'SIGTERM' ? 0 : 1);
+          const stderr = await new Response(kcp.stderr).text();
+          if (ending === 'revoked') expect(stderr).toContain('Every channel ended');
+          await waitFor(() => presenters.size === 0);
+          frames.length = 0;
+        } finally {
+          kcp.kill('SIGKILL');
+        }
+      }
+    } finally {
+      closeSync(neverRead);
+    }
+  }, 40_000);
 
   test('as a process: once the reader of stdout has gone (| head -1), the next event ends it with exit 0', async () => {
     const home = await kcpHome({ signetId: linearSignet, eventChannels: linearChannels });
@@ -1115,7 +1411,14 @@ describe('kcp [selectors] listen', () => {
       }
       expect(JSON.parse(stdout)).toMatchObject({ eventId: 'delivery-1' });
       await reader.cancel();
-      appended(linearSignet, engineering, seeded + 2, issue('delivery-2', 'Nobody reads this'));
+      let exited = false;
+      void kcp.exited.then(() => {
+        exited = true;
+      });
+      for (let seq = seeded + 2; !exited; seq++) {
+        appended(linearSignet, engineering, seq, issue(`delivery-${seq}`, 'Nobody reads this'));
+        await Bun.sleep(10);
+      }
       expect(await kcp.exited).toBe(0);
       const stderr = await new Response(kcp.stderr).text();
       expect(stderr).toContain('Listening on linear Engineering');
