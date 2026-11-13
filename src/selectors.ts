@@ -103,10 +103,10 @@ const flagFor = (key: string) =>
   Object.entries(flagKeys).find(([, value]) => value === key)?.[0] ?? key;
 
 /**
- * `kcp [selectors] <cli> <args…>`: selector flags come first; the first other word is the CLI, and
- * everything after it is that CLI's, untouched.
+ * The selector flags at the start of a command line, and everything from the first other word on,
+ * untouched: a CLI's name and its arguments, or one of KCP's own commands (`listen`) and its flags.
  */
-export function parseCommand(argv: readonly string[]): ParsedCommand {
+export function parseSelectors(argv: readonly string[]): { selection: Selection; rest: string[] } {
   const ids: SelectorIds = {};
   let index = 0;
   for (let word = argv[0]; word !== undefined; word = argv[++index]) {
@@ -127,7 +127,16 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
       throw new SelectorError(`${flag} was given twice with different ids`);
     ids[key] = value;
   }
-  const binary = argv[index];
+  return { selection: selectionFromIds(ids), rest: argv.slice(index) };
+}
+
+/**
+ * `kcp [selectors] <cli> <args…>`: selector flags come first; the first other word is the CLI, and
+ * everything after it is that CLI's, untouched.
+ */
+export function parseCommand(argv: readonly string[]): ParsedCommand {
+  const { selection, rest } = parseSelectors(argv);
+  const [binary, ...args] = rest;
   if (!binary) throw new SelectorError('Name the CLI to run, for example: kcp railway logs');
   if (binary === 'git') throw new SelectorError(gitRefusal);
   const family = providerFamilyOf(binary);
@@ -135,5 +144,5 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
     throw new SelectorError(
       `KCP does not proxy ${binary}; it runs ${Object.keys(binaryFamilies).join(', ')}`,
     );
-  return { selection: selectionFromIds(ids), binary, family, args: argv.slice(index + 1) };
+  return { selection, binary, family, args };
 }

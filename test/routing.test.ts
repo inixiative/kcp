@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { OwnerRef } from '@inixiative/signet/contracts';
-import { chooseSignet, type Reachable, resolveRoute } from '../src/routing';
+import {
+  chooseSignet,
+  type Listener,
+  narrowToIntegration,
+  type Reachable,
+  resolveListeners,
+  resolveRoute,
+} from '../src/routing';
 import type { Selection } from '../src/selectors';
 
 const id = (n: number) => `01a196f0-a68e-7d81-a8cd-${String(n).padStart(12, '0')}`;
@@ -273,6 +280,144 @@ describe('chooseSignet', () => {
       status: 'ambiguous',
       choose: 'signet',
       reason: expect.stringContaining('--signet'),
+    });
+  });
+});
+
+describe('resolveListeners', () => {
+  const listener = (
+    signetId: string,
+    owner: OwnerRef | null,
+    ...integrationIds: string[]
+  ): Listener => ({
+    signetId,
+    owner,
+    integrations: integrationIds.map((integrationId) => ({ integrationId })),
+  });
+  const tribeLinear = listener(id(11), orgOwner(tribe), id(1));
+  const inixiativeBoth = listener(id(12), orgOwner(inixiative), id(2), id(3));
+  const aronSlack = listener(id(13), membership, id(4));
+  const unknownOwner = listener(id(14), null, id(1));
+  const noChannels = listener(id(15), orgOwner(tribe));
+  const held = [tribeLinear, inixiativeBoth, aronSlack, unknownOwner, noChannels];
+  const listeners = (selection: Selection) => resolveListeners({ selection, held });
+  const signetIds = (selection: Selection) => {
+    const route = listeners(selection);
+    return route.status === 'resolved' ? route.listeners.map((item) => item.signetId) : route;
+  };
+
+  test('with no selector, every held Signet, whether or not it has a channel', () => {
+    expect(listeners({})).toEqual({ status: 'resolved', listeners: held });
+  });
+  test('nothing held is an error that says to log in', () => {
+    expect(resolveListeners({ selection: {}, held: [] })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining('kcp login'),
+    });
+  });
+  test('--signet is that one Signet; one this machine does not hold is an error', () => {
+    expect(listeners({ signetId: id(12) })).toEqual({
+      status: 'resolved',
+      listeners: [inixiativeBoth],
+    });
+    expect(listeners({ signetId: id(99) })).toEqual({
+      status: 'error',
+      reason: `This machine holds no Signet ${id(99)}; kcp login --signet ${id(99)}`,
+    });
+  });
+  test('--signet naming a Signet held here that Kingdom refused says Kingdom refused it', () => {
+    const unread = [
+      { signetId: id(20), status: 'revoked' as const },
+      { signetId: id(21), status: 'unavailable' as const },
+    ];
+    expect(resolveListeners({ selection: { signetId: id(20) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `Kingdom refused Signet ${id(20)}: it is revoked, or this machine is no longer enrolled on it (kcp status)`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(21) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `Kingdom did not describe Signet ${id(21)}, which this machine holds; check the connection, then kcp status`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(99) }, held, unread })).toEqual({
+      status: 'error',
+      reason: `This machine holds no Signet ${id(99)}; kcp login --signet ${id(99)}`,
+    });
+    expect(resolveListeners({ selection: { signetId: id(12) }, held, unread })).toEqual({
+      status: 'resolved',
+      listeners: [inixiativeBoth],
+    });
+  });
+  test('narrowToIntegration keeps the integration -i names, or everything without -i', () => {
+    expect(narrowToIntegration(inixiativeBoth, id(3))).toEqual({
+      ...inixiativeBoth,
+      integrations: [{ integrationId: id(3) }],
+    });
+    expect(narrowToIntegration(inixiativeBoth, id(1)).integrations).toEqual([]);
+    expect(narrowToIntegration(inixiativeBoth, undefined)).toBe(inixiativeBoth);
+  });
+  test('--signet with -i keeps only that integration; one it has no channel on is an error', () => {
+    expect(listeners({ signetId: id(12), integrationId: id(3) })).toEqual({
+      status: 'resolved',
+      listeners: [{ ...inixiativeBoth, integrations: [{ integrationId: id(3) }] }],
+    });
+    expect(listeners({ signetId: id(12), integrationId: id(1) })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining(`has no event channel on integration ${id(1)}`),
+    });
+  });
+  test('--signet beside owner flags: agreeing is fine, contradicting or uncheckable is refused', () => {
+    const tribeOwner = { ownerModel: 'Organization', organizationId: tribe } as const;
+    expect(signetIds({ signetId: id(11), owner: tribeOwner })).toEqual([id(11)]);
+    expect(listeners({ signetId: id(12), owner: tribeOwner })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining('pass one or the other'),
+    });
+    expect(listeners({ signetId: id(14), owner: tribeOwner })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining("Can't check --signet"),
+    });
+  });
+  test('-i is every Signet with a channel on that integration, each narrowed to it', () => {
+    expect(listeners({ integrationId: id(1) })).toEqual({
+      status: 'resolved',
+      listeners: [tribeLinear, unknownOwner],
+    });
+    expect(listeners({ integrationId: id(2) })).toEqual({
+      status: 'resolved',
+      listeners: [{ ...inixiativeBoth, integrations: [{ integrationId: id(2) }] }],
+    });
+    expect(listeners({ integrationId: id(77) })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining(`integration ${id(77)}`),
+    });
+  });
+  test('-i beside owner flags must agree with the integration’s owner', () => {
+    expect(
+      signetIds({
+        integrationId: id(1),
+        owner: { ownerModel: 'Organization', organizationId: tribe },
+      }),
+    ).toEqual([id(11), id(14)]);
+    expect(
+      listeners({
+        integrationId: id(1),
+        owner: { ownerModel: 'Organization', organizationId: inixiative },
+      }),
+    ).toMatchObject({ status: 'error', reason: expect.stringContaining('-i belongs to') });
+  });
+  test('owner flags are every Signet of that owner; an unknown owner never matches', () => {
+    expect(signetIds({ owner: { ownerModel: 'Organization', organizationId: tribe } })).toEqual([
+      id(11),
+      id(15),
+    ]);
+    expect(
+      signetIds({
+        owner: { ownerModel: 'OrganizationUser', organizationId: inixiative, userId: aron },
+      }),
+    ).toEqual([id(13)]);
+    expect(listeners({ owner: { ownerModel: 'User', userId: aron } })).toMatchObject({
+      status: 'error',
+      reason: expect.stringContaining('holds no Signet for User'),
     });
   });
 });

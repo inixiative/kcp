@@ -124,9 +124,9 @@ function bySelection(input: RouteInput, selection: Selection, via: 'project' | n
  */
 function ownerContradiction(
   owner: OwnerSelector | undefined,
-  chosen: readonly Reachable[],
+  chosen: readonly Pick<Reachable, 'owner'>[],
   flag: string,
-): Route | null {
+): Extract<Route, { status: 'error' }> | null {
   if (!owner) return null;
   const known = chosen.find((item) => item.owner !== null)?.owner;
   if (!known)
@@ -142,6 +142,9 @@ function ownerContradiction(
   return null;
 }
 
+const signetNotHeld = (signetId: string) =>
+  `This machine holds no Signet ${signetId}; kcp login --signet ${signetId}`;
+
 /**
  * Which integration a command runs through (OPERATOR-ACCESS §5): an exact Signet, then `-i`, then
  * the owner flags, then the repo's mapping, then the one matching integration; when nothing
@@ -152,11 +155,7 @@ export function resolveRoute(input: RouteInput): Route {
   if (selection.signetId) {
     const signetId = selection.signetId;
     const held = input.reachable.filter((item) => item.signetId === signetId);
-    if (!held.length)
-      return {
-        status: 'error',
-        reason: `This machine holds no Signet ${signetId}; kcp login --signet ${signetId}`,
-      };
+    if (!held.length) return { status: 'error', reason: signetNotHeld(signetId) };
     // A Signet may reach several integrations: `-i` narrows to one, then the command's family.
     const named = selection.integrationId
       ? held.filter((item) => item.integrationId === selection.integrationId)
@@ -239,4 +238,108 @@ export function chooseSignet<Candidate extends SignetGrants & Reachable>(
     candidates: [...candidates],
     reason: `${candidates.length} Signets are held on this integration and none grants ${parsed.operation} on resource ${parsed.resourceId}; choose one with --signet`,
   };
+}
+
+/**
+ * A held Signet as listening sees it: the integrations it has event channels on. Event kinds are
+ * streamed, never executed, so `access/describe` lists them apart from its operations and a Signet
+ * that grants only events is no `Reachable`.
+ */
+export type Listener = {
+  signetId: string;
+  /** The owner of the integrations it reaches; null when this machine doesn't know it. */
+  owner: OwnerRef | null;
+  integrations: readonly { integrationId: string }[];
+};
+
+/** A held Signet Kingdom did not describe: it refused the Signet (`revoked`), or gave no answer. */
+export type UnreadSignet = { signetId: string; status: 'revoked' | 'unavailable' };
+
+/** A listening Signet with only the integration `-i` names; all of them without `-i`. */
+export const narrowToIntegration = <Held extends Listener>(
+  listener: Held,
+  integrationId: string | undefined,
+): Held =>
+  integrationId
+    ? {
+        ...listener,
+        integrations: listener.integrations.filter(
+          (integration) => integration.integrationId === integrationId,
+        ),
+      }
+    : listener;
+
+export type ListenRoute<Held extends Listener> =
+  /** Every held Signet the selectors admit, each with the integrations they leave it. */
+  { status: 'resolved'; listeners: Held[] } | { status: 'error'; reason: string };
+
+/**
+ * Which held Signets `kcp listen` listens with. Where a command needs exactly one integration,
+ * listening takes every match: the Signet `--signet` names; else every Signet with a channel on
+ * `-i`'s integration; else every Signet of the owner the flags name; with no selector, all of
+ * them. `-i` narrows each Signet to that integration. Flags that contradict each other are
+ * refused as `resolveRoute` refuses them. The repo's `.foundry/kcp.json` is not read: it maps a
+ * CLI's provider family to an integration, and listening has no CLI. `held` are the Signets
+ * Kingdom describes; `--signet` naming one of the `unread` says what Kingdom answered, since this
+ * machine does hold it.
+ */
+export function resolveListeners<Held extends Listener>(input: {
+  selection: Selection;
+  held: readonly Held[];
+  unread?: readonly UnreadSignet[];
+}): ListenRoute<Held> {
+  const { signetId, integrationId, owner } = input.selection;
+  const narrowed = (listener: Held) => narrowToIntegration(listener, integrationId);
+  if (signetId) {
+    const named = input.held.find((listener) => listener.signetId === signetId);
+    const unread = input.unread?.find((signet) => signet.signetId === signetId);
+    if (!named && unread)
+      return {
+        status: 'error',
+        reason:
+          unread.status === 'revoked'
+            ? `Kingdom refused Signet ${signetId}: it is revoked, or this machine is no longer enrolled on it (kcp status)`
+            : `Kingdom did not describe Signet ${signetId}, which this machine holds; check the connection, then kcp status`,
+      };
+    if (!named) return { status: 'error', reason: signetNotHeld(signetId) };
+    const listener = narrowed(named);
+    if (integrationId && !listener.integrations.length)
+      return {
+        status: 'error',
+        reason: `Signet ${signetId} has no event channel on integration ${integrationId}${named.integrations.length ? `; it has them on ${named.integrations.map((integration) => integration.integrationId).join(', ')}` : ''}`,
+      };
+    return (
+      ownerContradiction(owner, [named], '--signet') ?? {
+        status: 'resolved',
+        listeners: [listener],
+      }
+    );
+  }
+  if (integrationId) {
+    const on = input.held.map(narrowed).filter((listener) => listener.integrations.length);
+    if (!on.length)
+      return {
+        status: 'error',
+        reason: `This machine holds no Signet with an event channel on integration ${integrationId}`,
+      };
+    return ownerContradiction(owner, on, '-i') ?? { status: 'resolved', listeners: on };
+  }
+  if (owner) {
+    const owned = input.held.filter(
+      (listener) => listener.owner !== null && ownerMatches(owner, listener.owner),
+    );
+    if (!owned.length)
+      return {
+        status: 'error',
+        reason: `This machine holds no Signet for ${describeOwner(owner)}`,
+      };
+    return { status: 'resolved', listeners: owned };
+  }
+  if (!input.held.length)
+    return {
+      status: 'error',
+      reason:
+        'This machine holds no Signet Kingdom describes right now; kcp login, then kcp status',
+    };
+  return { status: 'resolved', listeners: [...input.held] };
 }

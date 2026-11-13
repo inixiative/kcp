@@ -1,5 +1,4 @@
 import {
-  type HolderView,
   heldCredentials,
   installationPaths,
   SignetClient,
@@ -53,23 +52,28 @@ export type HeldReach = Reachable &
     resources: OperationResource[];
   };
 
+/** Each Signet this machine holds, with Kingdom's description of it now (`access/describe`). */
+export async function heldViews(home: string, url: string, holders = new SignetHolders()) {
+  const held = await heldCredentials(installationPaths(home, url).directory);
+  return Promise.all(
+    held.map(async (credential) => ({
+      credential,
+      view: await holders.get(
+        { url, signetId: credential.signetId, credentialFile: credential.credentialFile },
+        10_000,
+      ),
+    })),
+  );
+}
+
 /**
  * What this machine's held Signets reach, as Kingdom describes them: one entry per Signet and
  * integration its resources sit on (a Signet has no integration of its own), each with that
  * integration's resources and grants. Revoked or unread Signets are left out.
  */
 export async function heldReach(home: string, url: string, holders = new SignetHolders()) {
-  const held = await heldCredentials(installationPaths(home, url).directory);
-  const views: HolderView[] = await Promise.all(
-    held.map((credential) =>
-      holders.get(
-        { url, signetId: credential.signetId, credentialFile: credential.credentialFile },
-        10_000,
-      ),
-    ),
-  );
-  return held.flatMap((credential, index): HeldReach[] => {
-    const description = views[index]?.description;
+  const held = await heldViews(home, url, holders);
+  return held.flatMap(({ credential, view: { description } }): HeldReach[] => {
     if (!description) return [];
     const integrations = new Map<string, string>();
     for (const operation of description.operations)

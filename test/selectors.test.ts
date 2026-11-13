@@ -3,6 +3,7 @@ import {
   gitRefusal,
   ownerFromIds,
   parseCommand,
+  parseSelectors,
   providerFamilyOf,
   SelectorError,
 } from '../src/selectors';
@@ -103,5 +104,33 @@ describe('parseCommand', () => {
   test('git is the local credential-helper path, never a Kingdom execute', () => {
     expect(() => parseCommand(['git', 'push'])).toThrow(gitRefusal);
     expect(() => parseCommand(['-i', integration, 'git', 'fetch'])).toThrow(/credential helper/);
+  });
+});
+
+describe('parseSelectors', () => {
+  test('reads the selector flags and leaves the first other word and what follows untouched', () => {
+    expect(parseSelectors(['-o', org, '-u', user, 'listen', '--json'])).toEqual({
+      selection: { owner: { ownerModel: 'OrganizationUser', organizationId: org, userId: user } },
+      rest: ['listen', '--json'],
+    });
+    expect(parseSelectors([`--signet=${signet}`, '-i', integration, 'gh', '-i', 'x'])).toEqual({
+      selection: { signetId: signet, integrationId: integration },
+      rest: ['gh', '-i', 'x'],
+    });
+  });
+  test('with no selector the selection is empty, and with no word after them so is the rest', () => {
+    expect(parseSelectors(['listen', '--event', 'events.Issue.create'])).toEqual({
+      selection: {},
+      rest: ['listen', '--event', 'events.Issue.create'],
+    });
+    expect(parseSelectors(['-i', integration])).toEqual({
+      selection: { integrationId: integration },
+      rest: [],
+    });
+  });
+  test('refuses what parseCommand refuses among the selectors', () => {
+    expect(() => parseSelectors(['--json', 'listen'])).toThrow(/Unknown selector --json/);
+    expect(() => parseSelectors(['--token', signet, 'listen'])).toThrow(SelectorError);
+    expect(() => parseSelectors(['-s', 'general', 'listen'])).toThrow(/-s takes a UUID/);
   });
 });
