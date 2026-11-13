@@ -2,11 +2,13 @@
 import { parseArgs } from 'node:util';
 import { heldCredentials, installationPaths } from '@inixiative/signet';
 import { defaultKingdomUrl, kcpHome, savedKingdomUrl } from './kingdom';
+import { listen } from './listen';
+import { parseEventFilters } from './listening';
 import { NoOperationsError } from './operations';
 import { formatMap, kingdomMap, readOverview } from './overview';
 import { RouteError, runCommand } from './run';
 import { redactSecrets } from './secrets';
-import { SelectorError } from './selectors';
+import { parseSelectors, SelectorError } from './selectors';
 import {
   type EnrollCandidate,
   loginWithSignet,
@@ -27,6 +29,7 @@ export const usage = `KCP, the Kingdom CLI proxy
   kcp map [--json] --token -|env [--url URL]
 
   kcp [selectors] <railway|gh|vercel|infisical> <args…>
+  kcp [selectors] listen [--json] [--event LEAF|PREFIX.*]…
     -i INTEGRATION_ID   -o ORGANIZATION_ID   -s SPACE_ID   -u USER_ID
     -o ORG -u USER      organization membership
     -s SPACE -u USER    space membership
@@ -37,6 +40,11 @@ export const usage = `KCP, the Kingdom CLI proxy
   through Signets. Without --signet, login --token lists the Signets it would enroll and asks
   first; --yes accepts them when nothing can ask.
   git runs locally through KCP's git credential helper, which isn't built yet.
+  listen prints the integration events the held Signets grant, one line each on stdout (--json:
+  one JSON object each) and everything else on stderr, until interrupted. With no selector it
+  listens with every held Signet. --event keeps the channels holding that event leaf
+  (events.Issue.create) or one under that prefix (events.Issue.*). Events are live only: nothing
+  published while it wasn't listening is replayed.
   The Kingdom is --url, else KINGDOM_URL, else the last login, else hosted production.
   Keys and Signets live in KCP_HOME (default ~/.kcp).`;
 
@@ -53,6 +61,19 @@ const sessionOptions = {
   json: { type: 'boolean' },
   'no-open': { type: 'boolean' },
 } as const;
+
+const listenOptions = {
+  json: { type: 'boolean' },
+  event: { type: 'string', multiple: true },
+} as const;
+
+/** Aborts on SIGINT or SIGTERM, so `listen` closes its sockets and the process exits 0. */
+function interruption() {
+  const controller = new AbortController();
+  for (const signal of ['SIGINT', 'SIGTERM'] as const)
+    process.once(signal, () => controller.abort());
+  return controller.signal;
+}
 
 /** The terminal: stdin's whole text, one answered line, and whether a person can answer. */
 export type Terminal = {
@@ -113,7 +134,12 @@ const confirmEnrollment =
 
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 
-export async function main(argv: readonly string[], env = process.env, io = terminal) {
+export async function main(
+  argv: readonly string[],
+  env = process.env,
+  io = terminal,
+  interrupted?: AbortSignal,
+) {
   const [command, ...rest] = argv;
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     console.log(usage);
@@ -122,6 +148,20 @@ export async function main(argv: readonly string[], env = process.env, io = term
   const home = kcpHome(env);
   if (!['login', 'logout', 'status', 'map'].includes(command)) {
     const url = defaultKingdomUrl(undefined, await savedKingdomUrl(home), env);
+    const { selection, rest } = parseSelectors(argv);
+    if (rest[0] === 'listen') {
+      const { values } = parseArgs({ args: rest.slice(1), options: listenOptions, strict: true });
+      return listen({
+        home,
+        url,
+        selection,
+        json: values.json ?? false,
+        events: parseEventFilters(values.event ?? []),
+        out: (line) => console.log(line),
+        note: (line) => console.error(line),
+        signal: interrupted ?? interruption(),
+      });
+    }
     print(await runCommand({ argv, home, url, cwd: process.cwd() }));
     return 0;
   }

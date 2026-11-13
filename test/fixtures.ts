@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { generateSignetKey, installationPaths, writePrivateJson } from '@inixiative/signet';
-import type { OwnerRef } from '@inixiative/signet/contracts';
+import {
+  accessEventsStreamName,
+  type EventChannel,
+  type OwnerRef,
+} from '@inixiative/signet/contracts';
 
 export const id = (n: number) => `01a196f0-a68e-7d81-a8cd-${String(n).padStart(12, '0')}`;
 export const token43 = (seed: string) => seed.repeat(43).slice(0, 43);
@@ -32,7 +36,7 @@ export const credentials = () => ({
 export async function holdSignet(
   home: string,
   url: string,
-  signet: { signetId: string; owner?: OwnerRef },
+  signet: { signetId: string; owner?: OwnerRef; accessToken?: string },
 ) {
   const { directory, keyFile } = installationPaths(home, url);
   await writePrivateJson(keyFile, generateSignetKey());
@@ -71,6 +75,17 @@ export const description = (signet: {
     },
   ],
   holder: null,
+});
+
+/** One event channel of a Signet, as `eventChannels` on `access/describe` lists it. */
+export const eventChannel = (
+  signetId: string,
+  resourceId: string,
+  channel: Pick<EventChannel, 'kind' | 'name' | 'events'>,
+): EventChannel => ({
+  resourceId,
+  ...channel,
+  stream: accessEventsStreamName({ resourceId, signetId }),
 });
 
 const ownerGroup = (owner: OwnerRef, name: string) => ({

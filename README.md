@@ -2,7 +2,7 @@
 
 > Part of [inixiative](https://www.inixiative.com), technology for cooperation. See [all the projects](https://github.com/inixiative).
 
-KCP, the Kingdom CLI Proxy: run your provider CLIs through Kingdom with no credentials on your machine. Kingdom runs the command and streams the output back. **In progress:** the client (`kcp login`, `status`, `map`) is built; no operations are declared yet and Kingdom's runner is not built, so commands do not run end to end.
+KCP, the Kingdom CLI Proxy: run your provider CLIs through Kingdom with no credentials on your machine. Kingdom runs the command and streams the output back. **In progress:** the client (`kcp login`, `status`, `map`, `listen`) is built; no operations are declared yet and Kingdom's runner is not built, so commands do not run end to end.
 
 Agents kept stalling on expired CLI logins (Railway, Infisical) and on a plaintext Kingdom token in a dotfile. By design, you sign in to Kingdom once, and a command such as `railway logs` or `gh pr list` becomes a Signet `execute` call. Kingdom holds each integration's long-lived credential, runs the real CLI on its runner, and streams the output back. The credential never reaches the machine, and Kingdom never receives a raw argument list: KCP parses the command into a declared operation's typed input, and a command that parses into no operation has nothing to grant, so it is never sent.
 
@@ -20,6 +20,7 @@ kcp status [--url URL]
 kcp map [--json] --token -|env [--url URL]
 
 kcp [selectors] <railway|gh|vercel|infisical> <args…>
+kcp [selectors] listen [--json] [--event LEAF|PREFIX.*]…
 ```
 
 Every login ends the same way: a device key plus one credential file per Signet, private (0700 directory, 0600 files) under `KCP_HOME` (default `~/.kcp`), one directory per Kingdom host. The layout is `@inixiative/signet`'s installation layout (`<host>/installation-key.json`, `<host>/signet-<id>.json`), so a Foundry or Archive reads it the same way.
@@ -31,12 +32,13 @@ Every login ends the same way: a device key plus one credential file per Signet,
 - **`kcp logout`** withdraws an open pairing and deletes this machine's key and Signets for that Kingdom. Revoking stays with Kingdom, so it prints the Signet ids (and the KCP integration, if paired) the owner should revoke there. A withdrawal Kingdom refused is reported, and the command exits 1.
 - **`kcp status`** shows the pairing and each held Signet as Kingdom describes it now (`described`, `revoked` or `unavailable`), with its integration, provider and owner.
 - **`kcp map`** prints every owner you can reach and their integrations, with ids to pass to `-i`, and marks the ones you manage and the Signets this machine holds. `--json` prints the structure.
+- **`kcp listen`** prints the integration events the held Signets grant, as they happen, until interrupted. See [Listening](#listening).
 
 The Kingdom is `--url`, else `KINGDOM_URL`, else the one the last login used, else `https://api.kingdom.inixiative.com`.
 
 ## Selectors
 
-Selectors come before the CLI; everything after the CLI's name is its own.
+Selectors come before the CLI (or before `listen`); everything after the CLI's name is its own.
 
 | Flags | Means |
 |---|---|
@@ -86,9 +88,27 @@ Committed in the repo, found from the working directory up to the repo root (the
 
 `kcp <selectors> <cli> <args…>` first looks up the provider's operation parser (`operationParsers`); with none, it stops there, before any call to Kingdom. Otherwise it routes to an integration, and the parser turns argv into `{ operation, resourceId, input }`, typed by the operation `@inixiative/signet` declares (`DeclaredOperation`, `OperationInput`), or refuses and says why. KCP picks the held Signet that grants it and calls `SignetClient.execute` with that typed input. No parser exists yet, so every command ends with `No operations are declared for <provider> yet`, and nothing is sent.
 
+## Listening
+
+`kcp [selectors] listen` prints the provider events (GitHub, Slack, Linear) that Kingdom streams to the Signets this machine holds (Kingdom `docs/INTEGRATION-EVENTS.md`). It needs `@inixiative/signet` 0.15.0, which declares event channels and holds them on a Signet's socket.
+
+```
+kcp listen                                        # every channel of every held Signet
+kcp -o <organizationId> listen --json | jq .type  # that owner's Signets, one JSON object per event
+kcp --signet <signetId> listen --event events.Issue.create --event 'events.Comment.*'
+```
+
+- **Which Signets.** `resolveListeners` is a pure function beside `resolveRoute`, over the same held Signets and the same selectors. Where a command needs exactly one integration, listening takes every match: the Signet `--signet` names; else every Signet with a channel on `-i`'s integration; else every Signet of the owner the flags name; with no selector, every held Signet. `-i` also narrows each Signet to that integration. Flags that contradict each other are refused as routing refuses them. `.foundry/kcp.json` is not read: it maps a CLI's provider family to an integration, and listening has no CLI.
+- **Which channels.** A channel is one resource a Signet holds event kinds on. Each Signet's channels come from `eventChannels` on `access/describe`, the read `status` and routing already make. `--event` keeps the channels that hold an event leaf it admits: a leaf (`events.Issue.create`) admits itself, a prefix ending `.*` (`events.Issue.*`) every leaf under it; with no `--event`, every channel. The same filters decide what is printed: Kingdom delivers every event kind the Signet holds on an open channel, and `listen` prints only the kinds `--event` admits.
+- **Output.** Events go to stdout, one line each, so stdout can be piped. `--json` prints one JSON object per line: `{ signetId, integrationId, provider, resourceId, resourceKind, resourceName, eventId, type, seq, event }`, where `event` is the event as that Signet's lens projects it. Without it, a short line: time, provider, resource, type, and the event's title or excerpt when it has one. Everything else goes to stderr: each channel as Kingdom opens it, a gap in a channel's `seq`, a channel Kingdom closed and why, a Signet left out because Kingdom no longer describes it, errors. No credential, token or key is printed.
+- **Live only.** This is a way to listen at the time, not an event stream that guarantees delivery. Nothing is replayed: an event published before a channel opened, or while the connection was down, is gone (a channel that reopens says `Listening again`). A gap means events in between were lost or Kingdom restarted its count; the event that showed it is still printed. Nothing is deduped: two Signets on one resource each print the event, cut by their own lens. A consumer that must act once dedupes on `resourceId` and `eventId`.
+- **Ending.** SIGINT or SIGTERM closes the sockets and exits 0. With nothing to listen on (no held Signet the selectors admit, or no channel after `--event`) it says why and exits 1 before opening a socket. A revision reopens a channel under the new revision and a dropped connection reconnects; when Kingdom has ended every channel for good (revoked, expired, refused), it says so and exits 1.
+
+Each listening Signet presents itself on its own socket (`SignetSocket`); opens are paced by `@inixiative/signet`.
+
 ## Built and pending
 
-Built (v0): the three logins, `logout`, `status`, `map`, selector parsing, routing, `.foundry/kcp.json`, the parser registry and the execute path behind it.
+Built (v0): the three logins, `logout`, `status`, `map`, `listen`, selector parsing, routing, `.foundry/kcp.json`, the parser registry and the execute path behind it.
 
 Waiting on Kingdom and `@inixiative/signet`:
 
