@@ -92,7 +92,7 @@ Built (v0): the three logins, `logout`, `status`, `map`, selector parsing, routi
 
 Waiting on Kingdom and `@inixiative/signet`:
 
-- **The `kcp` installation kind.** Browser pairing needs `kcp` in signet's `installationKindSchema`, Kingdom's `InstallationKind` and `Provider` enums, and its catalog. None of the existing kinds fits: pairing as `foundry` creates a Foundry integration with a `threads` resource, `oracle` would show as an Oracle, and `archive` requires a `sourceId`. Until then `kcp login` says so and points to `--token` and `--signet`; once signet declares the kind, it works with no KCP change.
+- **The `kcp` installation kind.** Browser pairing needs `kcp` in signet's `installationKindSchema`, Kingdom's `InstallationKind` and `Provider` enums, and its catalog. None of the existing kinds fits: pairing as `foundry` creates a Foundry integration (no resource at pairing; it hosts one `conversation` resource per shared thread), `oracle` would show as an Oracle, and `archive` requires a `sourceId`. Until then `kcp login` says so and points to `--token` and `--signet`; once signet declares the kind, it works with no KCP change.
 - **CLI operations** (§9, §11 step 1): resource kinds and operation input schemas for Railway, GitHub, Vercel and Infisical in signet's contracts, then one parser each here.
 - **The runner** and its delivery value (§6), and **output streaming** over the Signet socket. Until then `execute` returns the result whole.
 - **`/me/overview` through a Signet.** The overview is a user route (JWT or API token), so `kcp map` needs `--token`. Routing doesn't: it reads the held Signets through `access/describe`.
