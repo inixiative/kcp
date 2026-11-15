@@ -1,0 +1,41 @@
+{
+  "id": "command-proxy",
+  "title": "Proxying a provider command",
+  "routing": "Is this about running kcp [selectors] <railway|gh|vercel|infisical> <args>: the -i -o -s -u --signet selector flags (parseCommand, selectionFromIds, SelectorError), mapping a binary to its provider family or refusing git, choosing the integration and Signet (resolveRoute, chooseSignet, OPERATOR-ACCESS \u00a75, ambiguous/ask), the repo's committed .foundry/kcp.json, turning argv into a declared operation's typed input (operationParsers, NoOperationsError), or runCommand's Signet execute call?",
+  "concepts": ["selectors", "routing", "project-mapping", "operation-parsers", "run-path"],
+  "tokens": 10016,
+  "tokenMethod": "chars/4",
+  "files": {
+    "recognise": {
+      "path": "recognise.md",
+      "tokens": 1767,
+      "experimental": true,
+      "note": "a smaller recognise-only document; knowledge.md is the Warden document"
+    },
+    "knowledge": {
+      "path": "knowledge.md",
+      "tokens": 10016
+    }
+  },
+  "runsAgreed": 3,
+  "sources": {
+    "docs": ["README.md"],
+    "docUnits": [
+      "doc:README.md#selectors",
+      "doc:README.md#routing",
+      "doc:README.md#running-a-command",
+      "doc:README.md#built-and-pending"
+    ],
+    "catalogClusters": [
+      "command-run",
+      "primitive-operations",
+      "primitive-project-mapping",
+      "primitive-routing",
+      "primitive-selectors"
+    ],
+    "codeEntries": 23,
+    "docMembers": 10
+  },
+  "bypassLines": 14,
+  "glossaryTerms": 24
+}

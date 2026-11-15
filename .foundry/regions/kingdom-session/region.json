@@ -1,0 +1,42 @@
+{
+  "id": "kingdom-session",
+  "title": "Kingdom login and session",
+  "routing": "Is this about which Kingdom KCP talks to (--url, KINGDOM_URL, defaultKingdomUrl) or its private KCP_HOME / ~/.kcp directory (kcpHome), signing this machine in or out (kcp login, --token, --signet, --request, logout, status: pairKcp, loginWithToken, loginWithSignet, holdGrantedSignets), enrolling Signets under the hold lock, reading a Kingdom API token from stdin or KINGDOM_TOKEN, scrubbing secrets from printed errors (redactSecrets), or listing reachable owners and integrations from /api/v1/me/overview (kcp map: readOverview, kingdomMap, formatMap, enrollableSignets)?",
+  "concepts": [
+    "kingdom-settings",
+    "login-session",
+    "api-token-input",
+    "secret-redaction",
+    "kingdom-map"
+  ],
+  "tokens": 9870,
+  "tokenMethod": "chars/4",
+  "files": {
+    "recognise": {
+      "path": "recognise.md",
+      "tokens": 1751,
+      "experimental": true,
+      "note": "a smaller recognise-only document; knowledge.md is the Warden document"
+    },
+    "knowledge": {
+      "path": "knowledge.md",
+      "tokens": 9870
+    }
+  },
+  "runsAgreed": 3,
+  "sources": {
+    "docs": ["README.md"],
+    "docUnits": ["doc:README.md#commands", "doc:README.md#built-and-pending"],
+    "catalogClusters": [
+      "command-login-session",
+      "command-map",
+      "primitive-kingdom-settings",
+      "primitive-secret-redaction",
+      "tool-cli"
+    ],
+    "codeEntries": 24,
+    "docMembers": 12
+  },
+  "bypassLines": 10,
+  "glossaryTerms": 26
+}
