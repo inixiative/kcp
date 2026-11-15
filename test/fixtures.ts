@@ -66,7 +66,6 @@ export const description = (signet: {
         kind: 'service',
         integrationId: resource.integrationId,
         provider: resource.provider,
-        lens: [],
       })),
     },
   ],
