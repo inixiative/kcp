@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/kcp",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "KCP, the Kingdom CLI proxy: sign in to Kingdom once, then run CLI commands as typed Signet operations Kingdom executes with the credential it holds.",
   "type": "module",
   "main": "src/index.ts",
@@ -31,7 +31,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@inixiative/signet": "^0.16.0",
+    "@inixiative/signet": "^0.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

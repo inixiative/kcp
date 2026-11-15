@@ -5,7 +5,7 @@
     "": {
       "name": "@inixiative/kcp",
       "dependencies": {
-        "@inixiative/signet": "^0.16.0",
+        "@inixiative/signet": "^0.19.0",
         "zod": "^4.3.6",
       },
       "devDependencies": {
@@ -38,9 +38,9 @@
 
     "@inixiative/config": ["@inixiative/config@0.5.211", "", { "peerDependencies": { "@biomejs/biome": ">=2.5.0", "tsup": ">=8.5.0", "typescript": ">=6.0.0" }, "optionalPeers": ["@biomejs/biome", "tsup", "typescript"], "bin": { "inixiative-config": "dist/cli.js" } }, "sha512-RS/KzIyfu4/YSMSrcyXOsuIzd61zSYyHzmZoAJcdSeXTHKtOrwHJ9Pq8iobpU6C+XRSJIKtTdkfLzEUKhkc+aA=="],
 
-    "@inixiative/json-rules": ["@inixiative/json-rules@3.16.0", "", { "dependencies": { "dayjs": "^1.11.13", "fastest-levenshtein": "^1.0.16", "re2js": "^2.8.6" }, "peerDependencies": { "@prisma/client": ">=6.0.0", "typescript": ">=6.0.0" }, "optionalPeers": ["@prisma/client", "typescript"] }, "sha512-97NnUjXwNj0wtyegbBBnkYMilFq0/ya970ckVcOcpGigqqePFDChrH3Vhnej/dbeqXglF0rqEKDSjjDT68VFLQ=="],
+    "@inixiative/json-rules": ["@inixiative/json-rules@3.23.0", "", { "dependencies": { "dayjs": "^1.11.13", "fastest-levenshtein": "^1.0.16", "re2js": "^2.8.6" }, "peerDependencies": { "@prisma/client": ">=6.0.0", "typescript": ">=6.0.0" }, "optionalPeers": ["@prisma/client", "typescript"] }, "sha512-zAafO4Q1WiKA9K8jSaVB5xCC1bT7B6ktnzbC3k0SNuzoXgn8LijlFyNH3Iey1mdGqVxlTR/mP2QsN+zqHZV1Fw=="],
 
-    "@inixiative/signet": ["@inixiative/signet@0.16.0", "", { "dependencies": { "jose": "^6.2.3" }, "peerDependencies": { "@inixiative/json-rules": "^3.16.0", "zod": "^4.3.6" } }, "sha512-nmGYhul/lqreax5a0DRkBNWiPDsEkUJvjbB8hCG1RCWHGhCpQTZt03lGkqFUMl6SMvIhELV6HI7bW0oGgZukFg=="],
+    "@inixiative/signet": ["@inixiative/signet@0.19.0", "", { "dependencies": { "jose": "^6.2.3" }, "peerDependencies": { "@inixiative/json-rules": "^3.21.0", "zod": "^4.3.6" } }, "sha512-c8brsS6wu5LRm3X+0SSwa/9F3DHvfngnrBrquIIA/eoeecVS4COjDrXbzJ7xZzv9AqLz9/3i7fuhtILDtlX9kA=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
