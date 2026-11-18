@@ -45,7 +45,6 @@ export const overviewSchema = z.object({
       recipientIntegrationId: z.uuid().nullable(),
       currentRevision: z.number().int(),
       expiresAt: z.coerce.date().nullable(),
-      revokedAt: z.coerce.date().nullable(),
       closedAt: z.coerce.date().nullable(),
       deletedAt: z.coerce.date().nullable(),
     }),
@@ -95,7 +94,6 @@ export const enrollableSignets = (overview: Overview, now = new Date()) =>
     (signet) =>
       personRecipientModels.has(signet.recipientModel) &&
       signet.recipientUserId === overview.dashboard.viewerUserId &&
-      !signet.revokedAt &&
       !signet.closedAt &&
       !signet.deletedAt &&
       (!signet.expiresAt || signet.expiresAt > now),
